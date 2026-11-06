@@ -56,6 +56,10 @@ fn main() {
             )
             .expect("failed to open the main window");
 
+        // GPUI does not set `_NET_WM_ICON`; give window managers that draw the
+        // app icon themselves (Cinnamon, XFCE, KWin) something to show.
+        desktop::install_window_icon();
+
         // Save the size immediately when the user closes the window, so a
         // resize just before closing is not lost to the polling interval.
         window

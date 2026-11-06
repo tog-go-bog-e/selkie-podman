@@ -161,10 +161,11 @@ LICENSE, desktop entry, icons, installer) and a `.sha256` next to it.
 Notes:
 
 - The window sets `WM_CLASS=podman-desktop-rs`, matching the desktop entry's
-  `StartupWMClass`, so launchers group the window with its icon. GPUI's X11
-  backend has no runtime window-icon call, so the titlebar icon comes from the
-  window manager's theme/entry rather than from the binary; the tray icon is
-  drawn by the app itself and needs no icon theme.
+  `StartupWMClass`, so launchers group the window with its icon. GPUI has no icon
+  API, so the app sets `_NET_WM_ICON` itself (sizes 16–128, drawn at runtime from
+  the same code as the tray icon); window managers that draw the icon in the
+  titlebar, window list or Alt-Tab pick it up. On Wayland the compositor uses the
+  desktop entry instead.
 - `tar` is required at runtime for the image file browser
   (see [Requirements](#requirements)).
 
@@ -299,6 +300,9 @@ the **Connections** tab to make this app talk to the VM.
     on a Unix socket there and a second launch sends `activate` before exiting;
   - the tray icon is a freedesktop StatusNotifierItem served over D-Bus with
     `ksni` (no GTK/AppIndicator C libraries); its icon is generated at runtime;
+  - the main window gets a `_NET_WM_ICON` property over a short-lived second X11
+    connection (`x11rb`), once the window manager has created the window, so the
+    icon drawn at runtime also shows up in titlebars, window lists and Alt-Tab;
   - tray and second-launch signals travel over channels to the GPUI thread,
     which polls them every 500 ms together with the window size.
 - `src/main.rs` opens the window, wires the close handler, and owns the

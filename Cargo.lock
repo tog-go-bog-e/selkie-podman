@@ -3826,6 +3826,7 @@ dependencies = [
  "serde",
  "serde_json",
  "vt100",
+ "x11rb",
 ]
 
 [[package]]

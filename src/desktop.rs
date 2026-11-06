@@ -1,4 +1,5 @@
-//! Desktop integration: single-instance handling and a system tray icon.
+//! Desktop integration: single-instance handling, the system tray icon and the
+//! X11 window icon.
 //!
 //! The single instance is enforced with an exclusive `flock` on a file in
 //! `$XDG_RUNTIME_DIR` (falling back to the temp directory). The first instance
@@ -9,6 +10,10 @@
 //! needs a host such as KDE, XFCE or GNOME with the AppIndicator extension.
 //! When no host is available the icon is simply not shown and the app keeps
 //! working.
+//!
+//! Window managers that draw the app icon themselves (Cinnamon/Muffin, XFCE,
+//! KWin) read it from the `_NET_WM_ICON` property, which GPUI never sets; see
+//! [`install_window_icon`].
 
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -218,30 +223,64 @@ impl ksni::Tray for AppTray {
 
 /// The app icon: a rounded Podman-purple square with a white "P".
 ///
-/// Generated at runtime so the binary stays self-contained and no icon theme
-/// installation is required.
-fn icon() -> ksni::Icon {
-    const SIZE: usize = 22;
-    const BACKGROUND: [u8; 3] = [0x89, 0x2c, 0xa0];
-    const FOREGROUND: [u8; 3] = [0xff, 0xff, 0xff];
+/// Drawn at runtime so the binary stays self-contained and no icon theme
+/// installation is required. Every pixel is sampled 4×4 times so the rounded
+/// corners and the glyph stay smooth at each requested size.
+fn icon_rgba(size: usize) -> Vec<u8> {
+    const BACKGROUND: [f32; 3] = [137.0, 44.0, 160.0];
+    const FOREGROUND: [f32; 3] = [255.0, 255.0, 255.0];
+    const SUB: usize = 4;
 
-    let mut data = vec![0u8; SIZE * SIZE * 4];
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            if !inside_rounded_square(x, y) {
+    let size_f = size as f32;
+    let radius = size_f * 5.0 / 22.0;
+    // Round to whole-pixel strokes so the glyph stays bold and crisp; ceilings
+    // would leave it thin at small sizes, which supersampling turns to mush.
+    let scale = ((size_f * 0.72 / 7.0).round()).max(2.0);
+    let mut data = vec![0u8; size * size * 4];
+
+    for y in 0..size {
+        for x in 0..size {
+            let mut background = 0u32;
+            let mut foreground = 0u32;
+            for sy in 0..SUB {
+                for sx in 0..SUB {
+                    let px = x as f32 + (sx as f32 + 0.5) / SUB as f32;
+                    let py = y as f32 + (sy as f32 + 0.5) / SUB as f32;
+                    if !inside_rounded_square(px, py, size_f, radius) {
+                        continue;
+                    }
+                    if is_glyph(px, py, size_f, scale) {
+                        foreground += 1;
+                    } else {
+                        background += 1;
+                    }
+                }
+            }
+            let covered = background + foreground;
+            if covered == 0 {
                 continue;
             }
-            let color = if is_glyph(x, y) {
-                FOREGROUND
-            } else {
-                BACKGROUND
-            };
-            let offset = (y * SIZE + x) * 4;
-            // ARGB32, network byte order.
-            data[offset] = 0xff;
-            data[offset + 1..offset + 4].copy_from_slice(&color);
+            let offset = (y * size + x) * 4;
+            for channel in 0..3 {
+                let value = (BACKGROUND[channel] * background as f32
+                    + FOREGROUND[channel] * foreground as f32)
+                    / covered as f32;
+                data[offset + channel] = value.round() as u8;
+            }
+            data[offset + 3] = (covered * 255 / (SUB * SUB) as u32) as u8;
         }
     }
+    data
+}
+
+/// The 22×22 icon the tray protocol expects, as ARGB32 in network byte order.
+fn icon() -> ksni::Icon {
+    const SIZE: usize = 22;
+    let rgba = icon_rgba(SIZE);
+    let data = rgba
+        .chunks(4)
+        .flat_map(|pixel| [pixel[3], pixel[0], pixel[1], pixel[2]])
+        .collect();
 
     ksni::Icon {
         width: SIZE as i32,
@@ -250,34 +289,160 @@ fn icon() -> ksni::Icon {
     }
 }
 
-fn inside_rounded_square(x: usize, y: usize) -> bool {
-    const SIZE: i32 = 22;
-    const RADIUS: i32 = 5;
-    let (x, y) = (x as i32, y as i32);
-    let nearest_x = x.clamp(RADIUS, SIZE - RADIUS - 1);
-    let nearest_y = y.clamp(RADIUS, SIZE - RADIUS - 1);
-    let dx = x - nearest_x;
-    let dy = y - nearest_y;
-    dx * dx + dy * dy <= RADIUS * RADIUS
+fn inside_rounded_square(x: f32, y: f32, size: f32, radius: f32) -> bool {
+    let dx = (radius - x).max(x - (size - radius)).max(0.0);
+    let dy = (radius - y).max(y - (size - radius)).max(0.0);
+    dx * dx + dy * dy <= radius * radius
 }
 
-fn is_glyph(x: usize, y: usize) -> bool {
-    // 5x7 bitmap of "P", scaled up to fit the 22x22 icon.
+fn is_glyph(x: f32, y: f32, size: f32, scale: f32) -> bool {
+    // 5x7 bitmap of "P", scaled up to fit the icon.
     const GLYPH: [&[u8]; 7] = [
         b"11110", b"10001", b"10001", b"11110", b"10000", b"10000", b"10000",
     ];
-    const SCALE: usize = 2;
-    const WIDTH: usize = 5 * SCALE;
-    const HEIGHT: usize = 7 * SCALE;
-    const OFFSET_X: usize = (22 - WIDTH) / 2;
-    const OFFSET_Y: usize = (22 - HEIGHT) / 2;
+    let width = 5.0 * scale;
+    let height = 7.0 * scale;
+    let offset_x = (size - width) / 2.0;
+    let offset_y = (size - height) / 2.0;
 
-    if x < OFFSET_X || y < OFFSET_Y || x >= OFFSET_X + WIDTH || y >= OFFSET_Y + HEIGHT {
+    if x < offset_x || y < offset_y || x >= offset_x + width || y >= offset_y + height {
         return false;
     }
-    let column = (x - OFFSET_X) / SCALE;
-    let row = (y - OFFSET_Y) / SCALE;
+    let column = (((x - offset_x) / scale) as usize).min(4);
+    let row = (((y - offset_y) / scale) as usize).min(6);
     GLYPH[row][column] == b'1'
+}
+
+/// Give the main window a real icon on X11.
+///
+/// The window belongs to GPUI's X connection, but X properties are global, so a
+/// short-lived second connection can set `_NET_WM_ICON` once the window
+/// appears. Without it Cinnamon/Muffin and other window managers that draw the
+/// icon in the titlebar or window list fall back to a generic one. No-op when
+/// there is no X display.
+pub fn install_window_icon() {
+    if std::env::var_os("DISPLAY").is_none() {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("window-icon".into())
+        .spawn(|| {
+            if let Err(error) = set_window_icon() {
+                eprintln!("podman-desktop-rs: window icon unavailable: {error}");
+            }
+        })
+        .ok();
+}
+
+fn set_window_icon() -> Result<(), String> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let (connection, screen) = x11rb::connect(None).map_err(|error| error.to_string())?;
+    let root = connection.setup().roots[screen].root;
+
+    let icon_atom = connection
+        .intern_atom(false, b"_NET_WM_ICON")
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?
+        .atom;
+    let mut data = Vec::new();
+    for size in [16usize, 22, 24, 32, 48, 64, 128] {
+        let rgba = icon_rgba(size);
+        data.push(size as u32);
+        data.push(size as u32);
+        data.extend(rgba.chunks(4).map(|pixel| {
+            (u32::from(pixel[3]) << 24)
+                | (u32::from(pixel[0]) << 16)
+                | (u32::from(pixel[1]) << 8)
+                | u32::from(pixel[2])
+        }));
+    }
+
+    // The window appears on GPUI's connection right after this is called and the
+    // window manager still has to reparent it, so keep looking and re-apply the
+    // property until it sticks.
+    let pid = std::process::id();
+    for _ in 0..100 {
+        let Some(window) = find_window(&connection, root, pid)? else {
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
+        connection
+            .change_property32(
+                PropMode::REPLACE,
+                window,
+                icon_atom,
+                AtomEnum::CARDINAL,
+                &data,
+            )
+            .map_err(|error| error.to_string())?;
+        connection.flush().map_err(|error| error.to_string())?;
+
+        let stuck = connection
+            .get_property(false, window, icon_atom, AtomEnum::CARDINAL, 0, 1)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|reply| !reply.value.is_empty());
+        if stuck {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// The first window owned by `pid` anywhere in the tree.
+///
+/// Window managers reparent client windows under a frame, so the app's window is
+/// usually not a direct child of the root; a bounded breadth-first walk finds it
+/// without depending on the frame layout.
+fn find_window(
+    connection: &impl x11rb::connection::Connection,
+    root: x11rb::protocol::xproto::Window,
+    pid: u32,
+) -> Result<Option<x11rb::protocol::xproto::Window>, String> {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+
+    let pid_atom = connection
+        .intern_atom(false, b"_NET_WM_PID")
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?
+        .atom;
+
+    let mut queue = std::collections::VecDeque::from([root]);
+    let mut visited = 0;
+    while let Some(parent) = queue.pop_front() {
+        visited += 1;
+        if visited > 1000 {
+            break;
+        }
+        // A window can disappear mid-walk; that is not an error for us.
+        let Ok(cookie) = connection.query_tree(parent) else {
+            continue;
+        };
+        let Ok(tree) = cookie.reply() else {
+            continue;
+        };
+        for &child in &tree.children {
+            let Ok(cookie) =
+                connection.get_property(false, child, pid_atom, AtomEnum::CARDINAL, 0, 1)
+            else {
+                continue;
+            };
+            let Ok(property) = cookie.reply() else {
+                continue;
+            };
+            if property.value32().and_then(|mut values| values.next()) == Some(pid) {
+                return Ok(Some(child));
+            }
+            queue.push_back(child);
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -300,9 +465,28 @@ mod tests {
     }
 
     #[test]
+    fn icon_scales_to_any_size_with_soft_edges() {
+        for size in [16usize, 22, 48, 128] {
+            let pixels = icon_rgba(size);
+            assert_eq!(pixels.len(), size * size * 4, "size {size}");
+
+            let alpha = |x: usize, y: usize| pixels[(y * size + x) * 4 + 3];
+            assert_eq!(alpha(0, 0), 0, "corner of {size}");
+            assert_eq!(alpha(size - 1, size - 1), 0, "corner of {size}");
+            assert_eq!(alpha(size / 2, size / 2), 255, "center of {size}");
+
+            let faded = (0..size * size).any(|index| {
+                let value = pixels[index * 4 + 3];
+                value != 0 && value != 255
+            });
+            assert!(faded, "no anti-aliased edge at {size}");
+        }
+    }
+
+    #[test]
     fn glyph_is_centered() {
-        assert!(is_glyph(11, 11));
-        assert!(!is_glyph(2, 2));
+        assert!(is_glyph(11.0, 11.0, 22.0, 2.0));
+        assert!(!is_glyph(2.0, 2.0, 22.0, 2.0));
     }
 
     #[test]

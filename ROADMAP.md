@@ -460,6 +460,15 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 - [x] `packaging/build-release.sh`: builds the release binary and writes
       `dist/podman-desktop-rs-<version>-<target>.tar.gz` (binary, README, ROADMAP,
       LICENSE, desktop entry, icons, installer) plus a `.sha256`
+- [x] The window icon is set from the binary: a second, short-lived `x11rb`
+      connection finds the window by `_NET_WM_PID` (the window manager reparents
+      it under a frame, so the search walks the tree) and writes
+      `_NET_WM_ICON` with 16/22/24/32/48/64/128 px renditions of the same runtime
+      icon the tray uses, retrying until the property sticks; window managers
+      that draw the icon themselves (Cinnamon/Muffin, XFCE, KWin) no longer
+      fall back to a generic one. The drawing code now scales to any size with
+      4×4 supersampling, and the glyph scale rounds to whole pixels so 16 px
+      stays bold
 
 ### Done (terminal: resize, scrollback, cursor keys)
 
@@ -505,7 +514,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
 | Stats | `podman stats --no-stream` polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
 | Dashboard | Counts from the snapshot; `podman info` + `podman system df` fetched only while the tab is visible and cached for 30 s (info probes the store and takes seconds) |
-| Packaging | `packaging/` holds the SVG/PNG icons, desktop entry, `install.sh` (user-level, `DESTDIR`-capable, `--uninstall`) and `build-release.sh` (versioned tarball + sha256); `app_id` sets `WM_CLASS` |
+| Packaging | `packaging/` holds the SVG/PNG icons, desktop entry, `install.sh` (user-level, `DESTDIR`-capable, `--uninstall`) and `build-release.sh` (versioned tarball + sha256); `app_id` sets `WM_CLASS`, and the app writes `_NET_WM_ICON` itself (16–128 px, drawn at runtime) |
 | Selection | Stored by ID; cleared when the item disappears from the snapshot |
 | Errors | Last good snapshot kept; error shown in status bar + toasts |
 
@@ -720,9 +729,10 @@ i18n. See "Non-goals" above.
   until the VM is up, and `machine init` downloads a multi-gigabyte image.
 - The release archive is built locally and is unsigned, unpublished and
   Linux-only; `install.sh` touches only the chosen prefix and there is no package
-  for distro repositories. GPUI has no X11 window-icon call, so the window icon
-  relies on the desktop environment matching `WM_CLASS` against the installed
-  entry; the tray icon is drawn in-process and needs no theme.
+  for distro repositories. The window icon is set through `_NET_WM_ICON` on the
+  main window; a window manager that reads the icon only when the window is
+  mapped may need a restart to show it the first time. On Wayland the icon comes
+  from the desktop entry.
 - The image file browser relies on `podman export | tar` instead of
   `podman image mount` (rootless mounts need `podman unshare`, and the mount does
   not survive the command). Each file preview re-streams the image, which is slow
@@ -949,6 +959,15 @@ LICENSE/README/ROADMAP/desktop/icons/installer with a matching `.sha256`, and
 `xprop -id <window> WM_CLASS` reports `"podman-desktop-rs", "podman-desktop-rs"`
 after adding `app_id` to the window options.
 
+Window icons were verified on 2026-11-06 on Cinnamon (X11): before the change
+`xprop _NET_WM_ICON` answered “not found” and the window manager drew a generic
+icon; afterwards the property carries seven renditions (16 through 128 px), the
+48 px one decodes to the expected purple rounded square with a white “P”, the
+property survives three consecutive restarts, and the Cinnamon window list shows
+the purple “P”. The first attempt failed intermittently because the property was
+written before the window manager had finished reparenting the window, so the
+writer now retries until it reads the property back.
+
 1. Select a container: Summary renders, Logs streams and follows.
 2. Start/stop/restart a disposable container; state and buttons update.
 3. Delete with confirmation; selection and logs close.
@@ -1124,8 +1143,10 @@ after adding `app_id` to the window options.
     `DESTDIR=/tmp/stage packaging/install.sh` places the binary, entry and icons
     under `/tmp/stage/...` and `--uninstall` removes them. Extract a release
     archive elsewhere, run its `install.sh` with a throwaway `PREFIX`, launch the
-    installed binary and confirm `xprop WM_CLASS` reports `podman-desktop-rs`.
-    Check the extracted icon renders and that the archive's `.sha256` matches.
+    installed binary and confirm `xprop WM_CLASS` reports `podman-desktop-rs` and
+    `xprop _NET_WM_ICON` lists 16–128 px icons (the window list and Alt-Tab then
+    show the purple “P”, not a generic icon). Check the extracted icon renders
+    and that the archive's `.sha256` matches.
 54. With a real machine (needs `gvproxy` and `virtiofsd` on `PATH`, see the
     README): the Machines tab lists it once with state, CPUs, memory, disk and
     last-up; **Start** in the action bar runs `podman machine start`, showing a
