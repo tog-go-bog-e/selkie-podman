@@ -158,6 +158,36 @@ packaging/install.sh --uninstall
 `dist/podman-desktop-rs-<version>-<target>.tar.gz` (binary, README, ROADMAP,
 LICENSE, desktop entry, icons, installer) and a `.sha256` next to it.
 
+### Debian package
+
+`packaging/build-deb.sh` builds a `.deb` that installs the binary system-wide
+together with the desktop entry, the icons and a man page:
+
+```bash
+packaging/build-deb.sh
+sudo apt install ./dist/podman-desktop-rs_<version>-1_<arch>.deb
+```
+
+The package is named `podman-desktop-rs`, depends on `podman`, `libvulkan1` and
+`libwayland-client0` (plus the X11/XKB libraries the binary links) and recommends
+`mesa-vulkan-drivers` for the software renderer. It installs:
+
+| Path | Contents |
+| ---- | -------- |
+| `/usr/bin/podman-desktop-rs` | stripped release binary |
+| `/usr/share/applications/podman-desktop-rs.desktop` | menu entry (`Development` category) |
+| `/usr/share/icons/hicolor/*/apps/podman-desktop-rs.png` | 16–512 px icons |
+| `/usr/share/man/man1/podman-desktop-rs.1.gz` | manual page |
+| `/usr/share/doc/podman-desktop-rs/` | README, ROADMAP, copyright, changelog |
+
+The entry appears in the desktop menu under **Development** (Cinnamon, GNOME,
+KDE, XFCE all read it); `update-desktop-database` and the icon cache are
+refreshed by the package's maintainer scripts. Only `dpkg-deb` is required to
+build it — when `dpkg-shlibdeps` (from `dpkg-dev`) is available the shared
+library dependencies are computed from the binary instead of guessed. Use
+`DEB_REVISION=<n>` to change the Debian revision (default `1`), and `lintian`
+runs automatically when installed.
+
 Notes:
 
 - The window sets `WM_CLASS=podman-desktop-rs`, matching the desktop entry's

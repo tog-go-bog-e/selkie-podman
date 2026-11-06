@@ -460,6 +460,14 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 - [x] `packaging/build-release.sh`: builds the release binary and writes
       `dist/podman-desktop-rs-<version>-<target>.tar.gz` (binary, README, ROADMAP,
       LICENSE, desktop entry, icons, installer) plus a `.sha256`
+- [x] `packaging/build-deb.sh`: builds
+      `dist/podman-desktop-rs_<version>-1_<arch>.deb` with the stripped binary in
+      `/usr/bin`, the desktop entry in `/usr/share/applications`, the seven icons
+      in the hicolor theme, a gzipped man page and DEP-5 docs; computes
+      `Depends` with `dpkg-shlibdeps` when available and adds the libraries the
+      renderer `dlopen`s (`libvulkan1`, `libwayland-client0`) plus `podman`, with
+      `mesa-vulkan-drivers` as a recommendation; maintainer scripts refresh the
+      desktop/icon caches; `lintian` is clean
 - [x] The window icon is set from the binary: a second, short-lived `x11rb`
       connection finds the window by `_NET_WM_PID` (the window manager reparents
       it under a frame, so the search walks the tree) and writes
@@ -968,6 +976,14 @@ the purple “P”. The first attempt failed intermittently because the property
 written before the window manager had finished reparenting the window, so the
 writer now retries until it reads the property back.
 
+Debian packaging was added on 2026-11-06: `packaging/build-deb.sh` produces
+`podman-desktop-rs_0.1.0-1_amd64.deb` (5.6 MB) with a stripped binary, desktop
+entry, seven hicolor icons, man page and DEP-5 docs; `lintian` reports nothing;
+`desktop-file-validate` passes on the packaged entry; `dpkg-deb -c` shows
+`root/root` ownership and 755/644 modes; `apt-get -s install ./dist/…deb`
+resolves to a clean single-package install; the extracted binary starts, renders
+and still sets all seven `_NET_WM_ICON` sizes.
+
 1. Select a container: Summary renders, Logs streams and follows.
 2. Start/stop/restart a disposable container; state and buttons update.
 3. Delete with confirmation; selection and logs close.
@@ -1146,7 +1162,10 @@ writer now retries until it reads the property back.
     installed binary and confirm `xprop WM_CLASS` reports `podman-desktop-rs` and
     `xprop _NET_WM_ICON` lists 16–128 px icons (the window list and Alt-Tab then
     show the purple “P”, not a generic icon). Check the extracted icon renders
-    and that the archive's `.sha256` matches.
+    and that the archive's `.sha256` matches. `packaging/build-deb.sh` builds a
+    `.deb` that `lintian` accepts, `apt-get -s install ./dist/…deb` resolves, and
+    after `sudo apt install` the app appears in the desktop menu under
+    **Development** with its icon.
 54. With a real machine (needs `gvproxy` and `virtiofsd` on `PATH`, see the
     README): the Machines tab lists it once with state, CPUs, memory, disk and
     last-up; **Start** in the action bar runs `podman machine start`, showing a
@@ -1208,6 +1227,6 @@ writer now retries until it reads the property back.
 - `src/ui/settings.rs` — persisted settings
 - `src/main.rs` — window bootstrap, close handler, desktop/window-state task
 - `build.rs` — Linux linker shim
-- `packaging/` — icon SVG + PNGs, desktop entry, `install.sh`, `build-release.sh`,
-  `render-icons.sh`
+- `packaging/` — icon SVG + PNGs, desktop entry, man page, `install.sh`,
+  `build-release.sh`, `build-deb.sh`, `render-icons.sh`
 - `README.md` — user-facing usage and limitations
