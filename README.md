@@ -185,16 +185,16 @@ Podman's built-in lookup paths. Two fixes are needed:
 
 - **`virtiofsd`** (used for the default `$HOME:$HOME` mount) comes from the
   `virtiofsd` package but is installed as `/usr/libexec/virtiofsd`, which is not
-  on `PATH`:
+  on `PATH`. Put it on `PATH`, for example:
 
   ```bash
   sudo apt install virtiofsd
-  ln -s /usr/libexec/virtiofsd ~/.local/bin/virtiofsd
+  ln -s /usr/libexec/virtiofsd ~/.local/bin/virtiofsd   # if ~/.local/bin is on PATH
   ```
 
   (Without the package, extracting `usr/libexec/virtiofsd` from the `.deb` into
-  `~/.local/bin` also works.) The VM also needs `qemu-system-x86` and a usable
-  `/dev/kvm`.
+  any directory on `PATH` also works.) Check with `command -v virtiofsd`. The VM
+  also needs `qemu-system-x86` and a usable `/dev/kvm`.
 
 After a machine starts, Podman adds `podman-machine-default` (and `-root`) as
 connections. The host CLI keeps using the local engine; select the connection in

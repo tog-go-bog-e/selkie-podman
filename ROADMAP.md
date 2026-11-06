@@ -907,6 +907,20 @@ list silently fell back to empty. After the fix the app lists the running machin
 the details pane and `uname -r` answered `6.12.13-200.fc41.x86_64`, and the
 Connections tab lists the two machine connections.
 
+Re-verified on 2026-11-06 with `virtiofsd` on `PATH` and a freshly created
+machine, all through the app: **Start** showed `Starting machine …` in the status
+bar and flipped the row, details pill and action bar to `running` after about
+30 s; **Terminal** opened `podman machine ssh`, whose OSC 2 title replaced the
+header label with `core@localhost:~`, `uname -r` answered and `stty size`
+reported `30 53` for that pane; the Connections tab listed
+`podman-machine-default` (marked `default`) and `-root`, **Use in this app**
+switched every list to the VM engine (0 containers/images/pods/volumes, 1
+network) with `via podman-machine-default` in the status card, and **Use Podman
+default** switched back. Podman itself reports `LastUp` as
+`0001-01-01T00:00:00Z` while the machine runs, so the app shows `-`. For a couple
+of seconds while `machine start` rewrote the connections config the sidebar
+showed `Containers 0`; the next refresh restored the list.
+
 Text cursors were added on 2026-11-06: the search box and modal fields showed no
 caret at all. A 2 px accent bar now sits before a placeholder or after the text,
 follows Tab between modal fields, and is kept visible while typing. The first
@@ -1112,12 +1126,16 @@ after adding `app_id` to the window options.
     archive elsewhere, run its `install.sh` with a throwaway `PREFIX`, launch the
     installed binary and confirm `xprop WM_CLASS` reports `podman-desktop-rs`.
     Check the extracted icon renders and that the archive's `.sha256` matches.
-54. With a real running machine (needs `gvproxy` and `virtiofsd`, see the README):
-    the Machines tab lists it once with state, CPUs, memory, disk and last-up;
-    **Terminal** opens an SSH shell where `uname -r` answers; Connections lists
-    `podman-machine-default` and `podman-machine-default-root`; switching to the
-    connection makes the Containers tab show the (empty) VM engine instead of the
-    host's containers.
+54. With a real machine (needs `gvproxy` and `virtiofsd` on `PATH`, see the
+    README): the Machines tab lists it once with state, CPUs, memory, disk and
+    last-up; **Start** in the action bar runs `podman machine start`, showing a
+    `Starting machine …` status until the row and pill turn `running`;
+    **Terminal** opens an SSH shell where `uname -r` answers and the pane title
+    becomes the shell's OSC 2 title (e.g. `core@localhost:~`); Connections
+    lists `podman-machine-default` and `podman-machine-default-root`; **Use in
+    this app** switches every list to the VM engine (empty containers/images,
+    `via podman-machine-default` in the status card) and **Use Podman default**
+    switches back.
 55. Caret: press `/` — a 2 px bar blinks after the typed text (and before the
     placeholder when the box is empty); it stays visible while typing. Open any
     modal: the caret is on the active field and moves with Tab. Idle CPU stays at
