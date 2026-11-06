@@ -195,6 +195,30 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       `TextSystem::advance` once, and derives the column count from it, so the
       pty width matches the drawn text exactly at every pane width; the same
       family is used for the runs, so no glyph advances are guessed
+- [x] Full cell styling: bold, dim (blended toward the background), italic,
+      underline, inverse and explicit fg/bg, merged into one run per style; any
+      cell whose background is not the default uses a non-breaking space so
+      blank highlighted cells still paint
+- [x] Text selection with the mouse: drag, double-click for a word and
+      triple-click for a line, rendered as an `accent_soft` background over the
+      cell range; `Ctrl+Shift+C` copies the range through
+      `Screen::contents_between` with trailing blanks trimmed per line, and
+      scrolling or a click without a drag clears it
+- [x] `Ctrl+Shift+V` pastes the clipboard, converting newlines to carriage
+      returns, or wrapping the text in `ESC[200~`/`ESC[201~` when the program
+      enabled bracketed paste (`DECSET 2004`); pasted `ESC[201~` is stripped so
+      text cannot close the bracket itself
+- [x] Mouse reporting when the program asks for it (`DECSET 9/1000/1002/1003`):
+      press/release/motion and wheel are encoded as SGR (`ESC[<b;x;yM/m`), the
+      legacy X10 form or the UTF-8 form, with shift/alt/ctrl modifiers; wheel
+      events go to the program instead of the scrollback and one event is sent
+      per notch
+- [x] Cursor shapes from `DECSCUSR`: steady/blinking block (reverse video),
+      underline and vertical bar (a 2 px rectangle laid over the cell), with
+      blinking styles driven by the existing 2 Hz desktop tick so idle CPU stays
+      flat
+- [x] `OSC 0/2` window titles are captured through the emulator's callbacks and
+      shown in the pane header (falling back to the launched command)
 
 ### Done (Milestone B2 — event-driven updates)
 
@@ -478,7 +502,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Long-running commands | `src/ui/output.rs` + `start_output`: compose up/down, image builds and pulls stream stdout/stderr into one panel, one at a time |
 | Registries | `podman push` with a validated destination; `podman login --password-stdin` / `podman logout` with credentials kept out of argv; loopback registries skip TLS verification |
 | Builds | `podman build -f <Containerfile> -t <tag> [--platform …] [--build-arg …] <context>`; context defaults to the Containerfile directory, all inputs validated, shared output panel |
-| Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode |
+| Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
 | Stats | `podman stats --no-stream` polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
 | Dashboard | Counts from the snapshot; `podman info` + `podman system df` fetched only while the tab is visible and cached for 30 s (info probes the store and takes seconds) |
 | Packaging | `packaging/` holds the SVG/PNG icons, desktop entry, `install.sh` (user-level, `DESTDIR`-capable, `--uninstall`) and `build-release.sh` (versioned tarball + sha256); `app_id` sets `WM_CLASS` |
@@ -730,14 +754,18 @@ i18n. See "Non-goals" above.
   directory as context; there is no override yet, and remote builds depend on
   Podman's context transfer. Build and compose actions share one runner, so only
   one can run at a time.
-- The terminal has a fixed 50×24 grid (no resize/scrollback/selection), always
-  runs `/bin/sh`, and captures app shortcuts while focused. Closing the PTY is
-  what stops the shell; killing `podman exec` directly can leave a stale conmon,
-  so the shutdown path closes the master first. The exec client also carries
-  `PR_SET_PDEATHSIG=SIGTERM` so it cannot outlive a hard kill. Exec sessions
-  themselves cannot be reaped when the client dies abruptly: podman leaves the
-  conmon and its idle shell until the container stops, and those processes mostly
-  ignore SIGTERM, so manual cleanup needs SIGKILL from inside the container.
+- The terminal captures app shortcuts while focused, always runs `/bin/sh`, and
+  hyperlinks (`OSC 8`) are unavailable because `vt100` does not expose them.
+  Closing the PTY is what stops the shell; killing `podman exec` directly can
+  leave a stale conmon, so the shutdown path closes the master first. The exec
+  client also carries `PR_SET_PDEATHSIG=SIGTERM` so it cannot outlive a hard
+  kill. Exec sessions themselves cannot be reaped when the client dies
+  abruptly: podman leaves the conmon and its idle shell until the container
+  stops, and those processes mostly ignore SIGTERM, so manual cleanup needs
+  SIGKILL from inside the container. Selection and mouse coordinates are
+  viewport cells, so a selection does not follow text as the screen scrolls and
+  wheel scrolling clears it; dragging outside the pane stops extending it
+  because GPUI only delivers move events while the grid is hovered.
 
 ## Verification checklist
 
@@ -812,7 +840,14 @@ never be confirmed against a machine whose unused volumes matter. Terminal grid
 width verified live on 2026-11-06: the app resolved `JetBrainsMono Nerd Font
 Mono` (a 7.2 px advance at the 12 px size), `stty size` answered 28×53, 28×65
 and 28×100 for 384, 470 and 720 px panes, and a line of exactly 100 characters
-reached the right edge of the 720 px pane without wrapping or clipping._
+reached the right edge of the 720 px pane without wrapping or clipping. Terminal
+fidelity verified live the same day: `OSC 2` replaced the header label, bold /
+italic / dim / underline rendered distinctly, `DECSCUSR` produced an underline,
+a bar and a 2 Hz blinking bar, a double-click selected exactly the word and a
+`Ctrl+Shift+C` → `Ctrl+Shift+V` round trip pasted it back byte for byte (od showed
+`PASTED-OK`), `cat -v` printed `^[[200~PASTED-OK^[[201~` once bracketed paste was
+enabled, and mouse reporting produced `^[[<0;12;4M`/`m` for a click and one
+`^[[<64;12;4M`/`^[[<65;12;4M` per wheel notch._
 
 Machine lifecycle verified in part on 2026-11-06: the Create machine dialog
 rendered all four optional fields, Tab moved focus between them, and
@@ -1093,9 +1128,23 @@ after adding `app_id` to the window options.
     line of exactly that many characters reaches the right edge of the pane
     without wrapping or clipping. Run `seq 1 300`, scroll up with the wheel: the
     header shows `N lines back` with a **Live** button, the block cursor
-    disappears, and Live returns to the prompt. `printf '\033[?1h'; cat -v` then
-    Up prints `^[OA`; after `printf '\033[?1l'` it prints `^[[A`. Clicking
-    Live/Reload must not steal the keyboard.
+    disappears, Live returns to the prompt, and typing a key jumps back to the
+    bottom. `printf '\033[?1h'; cat -v` then Up prints `^[OA`; after
+    `printf '\033[?1l'` it prints `^[[A`. Clicking Live/Reload must not steal the
+    keyboard.
+57. Terminal styling and cursor: `printf
+    '\033[1mB\033[0m \033[2mD\033[0m \033[3mI\033[0m \033[4mU\033[0m\n'`
+    renders bold, dim, italic and underlined letters; `printf '\033[4 q'`,
+    `\033[6 q` and `\033[1 q` switch the cursor to an underline, a bar and a
+    blinking block; `printf '\033]2;hello\007'` replaces the header label with
+    `hello`.
+58. Terminal clipboard and mouse: drag across output — the range is highlighted;
+    `Ctrl+Shift+C` then `echo ` + `Ctrl+Shift+V` pastes exactly that text (a
+    double-click selects one word, a triple-click the line). With bracketed
+    paste enabled (`printf '\033[?2004h'`) a paste into `cat -v` prints
+    `^[[200~…^[[201~`. With `printf '\033[?1000h\033[?1006h'` a click in
+    `cat -v` prints `^[[<0;x;yM` and `…m`, one wheel notch prints
+    `^[[<64;x;yM` (or `<65` scrolling down), and no selection is created.
 
 ## File map
 

@@ -12,7 +12,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const TERMINAL_ROWS: u16 = 24;
@@ -20,12 +20,27 @@ pub const TERMINAL_COLS: u16 = 50;
 /// Lines of history kept by the emulator for scrolling back.
 pub const TERMINAL_SCROLLBACK: usize = 2000;
 
+/// Escape sequences that do not touch the grid, only the window around it.
+#[derive(Clone, Default)]
+struct TerminalEvents {
+    title: Arc<Mutex<Option<String>>>,
+}
+
+impl vt100::Callbacks for TerminalEvents {
+    fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
+        if let Ok(mut current) = self.title.lock() {
+            *current = Some(String::from_utf8_lossy(title).into_owned());
+        }
+    }
+}
+
 /// One interactive client attached through a pseudo-terminal.
 pub struct TerminalSession {
     master: Option<File>,
     stop: Arc<AtomicBool>,
     child: Option<Child>,
-    parser: vt100::Parser,
+    parser: vt100::Parser<TerminalEvents>,
+    title: Arc<Mutex<Option<String>>>,
     rows: u16,
     cols: u16,
     receiver: Receiver<Vec<u8>>,
@@ -144,6 +159,10 @@ impl TerminalSession {
 
         let stop = Arc::new(AtomicBool::new(false));
         let reader_stop = Arc::clone(&stop);
+        let title = Arc::new(Mutex::new(None));
+        let callbacks = TerminalEvents {
+            title: Arc::clone(&title),
+        };
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("terminal".into())
@@ -175,11 +194,13 @@ impl TerminalSession {
             master: Some(master),
             stop,
             child: Some(child),
-            parser: vt100::Parser::new(
+            parser: vt100::Parser::new_with_callbacks(
                 NonZeroU16::new(rows).unwrap_or(NonZeroU16::MIN),
                 NonZeroU16::new(cols).unwrap_or(NonZeroU16::MIN),
                 TERMINAL_SCROLLBACK,
+                callbacks,
             ),
+            title,
             rows,
             cols,
             receiver,
@@ -255,6 +276,45 @@ impl TerminalSession {
     /// Whether the shell requested application cursor keys (`DECCKM`).
     pub fn application_cursor(&self) -> bool {
         self.parser.screen().application_cursor()
+    }
+
+    /// Whether the shell asked for pastes to be bracketed (`DECSET 2004`).
+    pub fn bracketed_paste(&self) -> bool {
+        self.parser.screen().bracketed_paste()
+    }
+
+    /// Mouse reporting mode requested by the running program (`DECSET 9/1000/1002/1003`).
+    pub fn mouse_mode(&self) -> vt100::MouseProtocolMode {
+        self.parser.screen().mouse_protocol_mode()
+    }
+
+    /// Wire format for mouse reports (`SGR` or the legacy encodings).
+    pub fn mouse_encoding(&self) -> vt100::MouseProtocolEncoding {
+        self.parser.screen().mouse_protocol_encoding()
+    }
+
+    /// Cursor shape requested with `DECSCUSR`.
+    pub fn cursor_style(&self) -> vt100::CursorStyle {
+        self.parser.screen().cursor_style()
+    }
+
+    /// Whether the requested cursor shape blinks.
+    pub fn cursor_blinks(&self) -> bool {
+        matches!(
+            self.cursor_style(),
+            vt100::CursorStyle::BlinkBlock
+                | vt100::CursorStyle::BlinkUnderline
+                | vt100::CursorStyle::BlinkVerticalBar
+        )
+    }
+
+    /// Window title set through `OSC 0`/`OSC 2`, if any.
+    pub fn title(&self) -> Option<String> {
+        self.title
+            .lock()
+            .ok()
+            .and_then(|title| title.clone())
+            .filter(|title| !title.trim().is_empty())
     }
 
     pub fn write(&self, bytes: &[u8]) {

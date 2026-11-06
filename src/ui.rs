@@ -727,8 +727,12 @@ pub struct PodmanDesktop {
     terminal_focus: FocusHandle,
     /// Grid size measured during prepaint, applied on the next terminal poll.
     terminal_size: std::rc::Rc<std::cell::Cell<(u16, u16)>>,
+    /// Window-space origin of the terminal text area, captured during prepaint.
+    terminal_origin: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    /// Anchor and active cell of a terminal text selection.
+    terminal_selection: Option<(terminal::TermPos, terminal::TermPos)>,
     /// Monospace font and cell width, resolved on the first terminal paint.
-    terminal_metrics: std::rc::Rc<std::cell::RefCell<Option<terminal::TerminalMetrics>>>,
+    terminal_font: std::rc::Rc<std::cell::RefCell<Option<terminal::TerminalMetrics>>>,
 
     output_lines: Vec<String>,
     output_title: Option<String>,
@@ -808,7 +812,9 @@ impl PodmanDesktop {
             terminal_task: None,
             terminal_focus: cx.focus_handle(),
             terminal_size: std::rc::Rc::new(std::cell::Cell::new((0, 0))),
-            terminal_metrics: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            terminal_origin: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+            terminal_selection: None,
+            terminal_font: std::rc::Rc::new(std::cell::RefCell::new(None)),
             output_lines: Vec::new(),
             output_title: None,
             output_handle: ScrollHandle::new(),
@@ -948,6 +954,15 @@ impl PodmanDesktop {
     /// redraw the whole window at display rate just to blink a 2 px bar.
     pub(crate) fn blink_caret(&mut self, window: &Window, cx: &mut Context<Self>) {
         if self.modal.is_some() || self.search_focus.is_focused(window) {
+            self.caret_on = !self.caret_on;
+            cx.notify();
+        } else if self.terminal_focus.is_focused(window)
+            && self
+                .terminal
+                .as_ref()
+                .is_some_and(|session| session.cursor_blinks())
+        {
+            // Only a blinking cursor shape needs the redraw.
             self.caret_on = !self.caret_on;
             cx.notify();
         }

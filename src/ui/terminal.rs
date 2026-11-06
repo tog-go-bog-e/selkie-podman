@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use gpui::{FontWeight, KeyDownEvent, MouseButton, SharedString};
+use gpui::{
+    FontWeight, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Point, SharedString,
+};
 
 use super::helpers::*;
 use super::*;
@@ -33,6 +36,23 @@ const PREFERRED_FONTS: &[&str] = &[
 pub(super) struct TerminalMetrics {
     family: SharedString,
     char_width: f32,
+}
+
+/// A cell in the terminal viewport (not the scrollback as a whole).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) struct TermPos {
+    row: u16,
+    col: u16,
+}
+
+/// Everything that makes one run of cells share a rendered span.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CellStyle {
+    fg: u32,
+    bg: u32,
+    bold: bool,
+    italic: bool,
+    underline: bool,
 }
 
 impl PodmanDesktop {
@@ -114,6 +134,7 @@ impl PodmanDesktop {
         self.terminal_task = None;
         self.terminal = None;
         self.terminal_target = None;
+        self.terminal_selection = None;
         self.terminal_label.clear();
         self.terminal_error = None;
     }
@@ -202,6 +223,13 @@ impl PodmanDesktop {
             .terminal
             .as_ref()
             .map_or(0, |session| session.scrollback());
+        // Programs that set the window title (OSC 0/2) get to describe
+        // themselves; otherwise show what we launched.
+        let title = self
+            .terminal
+            .as_ref()
+            .and_then(|session| session.title())
+            .unwrap_or_else(|| self.terminal_label.clone());
 
         view = view.child(
             div()
@@ -220,11 +248,12 @@ impl PodmanDesktop {
                         .min_w(px(0.))
                         .child(
                             div()
-                                .flex_shrink_0()
+                                .min_w(px(0.))
                                 .text_xs()
                                 .font_family("monospace")
                                 .text_color(rgb(theme().text))
-                                .child(self.terminal_label.clone()),
+                                .truncate()
+                                .child(title),
                         )
                         .child(div().text_xs().text_color(rgb(status_color)).child(status))
                         .when(scrollback > 0, |el| {
@@ -298,7 +327,7 @@ impl PodmanDesktop {
     /// Resolve the monospace font and its cell advance the first time a grid is
     /// painted. Both stay stable for the lifetime of the process.
     fn terminal_metrics(&self, text_system: &gpui::TextSystem) -> TerminalMetrics {
-        if let Some(metrics) = self.terminal_metrics.borrow().as_ref() {
+        if let Some(metrics) = self.terminal_font.borrow().as_ref() {
             return metrics.clone();
         }
 
@@ -311,7 +340,7 @@ impl PodmanDesktop {
             .unwrap_or(FONT_SIZE * 0.6);
 
         let metrics = TerminalMetrics { family, char_width };
-        *self.terminal_metrics.borrow_mut() = Some(metrics.clone());
+        *self.terminal_font.borrow_mut() = Some(metrics.clone());
         metrics
     }
 
@@ -321,19 +350,46 @@ impl PodmanDesktop {
         };
         let metrics = self.terminal_metrics(cx.text_system());
         let family = metrics.family.clone();
+        let char_width = metrics.char_width;
         let screen = session.screen();
         let (rows, cols) = screen.size();
         let (rows, cols) = (rows.get(), cols.get());
         let (cursor_row, cursor_col) = screen.cursor_position();
-        // The block cursor belongs to the live viewport.
-        let show_cursor = !screen.hide_cursor() && !session.closed && screen.scrollback() == 0;
 
-        let mut lines = div().flex().flex_col().flex_1().min_h(px(0.)).w_full();
+        // Programs choose the cursor shape with DECSCUSR; the default is a
+        // steady block.
+        let (cursor_shape, blinking) = match session.cursor_style() {
+            vt100::CursorStyle::BlinkBlock => (CursorShape::Block, true),
+            vt100::CursorStyle::SteadyBlock => (CursorShape::Block, false),
+            vt100::CursorStyle::BlinkUnderline => (CursorShape::Underline, true),
+            vt100::CursorStyle::SteadyUnderline => (CursorShape::Underline, false),
+            vt100::CursorStyle::BlinkVerticalBar => (CursorShape::Bar, true),
+            vt100::CursorStyle::SteadyVerticalBar => (CursorShape::Bar, false),
+            vt100::CursorStyle::Default => (CursorShape::Block, false),
+        };
+        // The cursor belongs to the live viewport, and blinking shapes follow
+        // the same 2 Hz tick as the text carets.
+        let show_cursor = !screen.hide_cursor()
+            && !session.closed
+            && screen.scrollback() == 0
+            && (!blinking || self.caret_on);
+
+        let selection = self
+            .terminal_selection
+            .map(|(anchor, active)| terminal_selection_range(anchor, active));
+
+        let mut lines = div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.))
+            .w_full();
 
         for row in 0..rows {
             let mut line = div().flex().items_center().h(px(LINE_HEIGHT)).w_full();
             let mut text = String::new();
-            let mut style: Option<(u32, u32, bool)> = None;
+            let mut style: Option<CellStyle> = None;
 
             for col in 0..cols {
                 let Some(cell) = screen.cell(row, col) else {
@@ -348,11 +404,26 @@ impl PodmanDesktop {
                 if cell.inverse() {
                     std::mem::swap(&mut fg, &mut bg);
                 }
-                if show_cursor && row == cursor_row && col == cursor_col {
+                if cell.dim() {
+                    fg = blend(fg, bg, 0.45);
+                }
+
+                let at_cursor = show_cursor && row == cursor_row && col == cursor_col;
+                let block_cursor = at_cursor && cursor_shape == CursorShape::Block;
+                if selection.is_some_and(|range| contains(range, row, col)) {
+                    bg = theme().accent_soft;
+                }
+                if block_cursor {
                     std::mem::swap(&mut fg, &mut bg);
                 }
 
-                let cell_style = (fg, bg, cell.bold());
+                let cell_style = CellStyle {
+                    fg,
+                    bg,
+                    bold: cell.bold(),
+                    italic: cell.italic(),
+                    underline: cell.underline(),
+                };
                 if style != Some(cell_style) {
                     if let Some(previous) = style {
                         line = line.child(terminal_run(&text, previous, &family));
@@ -360,15 +431,13 @@ impl PodmanDesktop {
                     text.clear();
                     style = Some(cell_style);
                 }
+
                 let contents = cell.contents();
-                if show_cursor && row == cursor_row && col == cursor_col {
-                    // A plain space collapses to zero width, so the reversed
-                    // background would never paint; use a non-breaking space.
-                    if contents.trim().is_empty() {
-                        text.push('\u{00A0}');
-                    } else {
-                        text.push_str(contents);
-                    }
+                // A plain space collapses to zero width, so a coloured or
+                // reversed background would never paint; use a non-breaking
+                // space wherever the cell's background is not the default.
+                if contents.trim().is_empty() && bg != theme().bg {
+                    text.push('\u{00A0}');
                 } else {
                     text.push_str(contents);
                 }
@@ -380,17 +449,47 @@ impl PodmanDesktop {
             lines = lines.child(line);
         }
 
+        // A bar or underline cursor cannot be drawn by recolouring a cell, so
+        // lay a small rectangle over it instead.
+        if show_cursor && cursor_shape != CursorShape::Block {
+            let (left, top, width, height) = match cursor_shape {
+                CursorShape::Underline => (
+                    f32::from(cursor_col) * char_width,
+                    f32::from(cursor_row) * LINE_HEIGHT + LINE_HEIGHT - 2.0,
+                    char_width,
+                    2.0,
+                ),
+                _ => (
+                    f32::from(cursor_col) * char_width,
+                    f32::from(cursor_row) * LINE_HEIGHT,
+                    2.0,
+                    LINE_HEIGHT,
+                ),
+            };
+            lines = lines.child(
+                div()
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(width))
+                    .h(px(height))
+                    .bg(rgb(theme().text)),
+            );
+        }
+
         // The grid reports its own size here so the session can resize the
         // emulator and the pty to match the pane. The width comes from the
         // font's real advance: a guess would leave the last columns unclaimed.
+        // The origin lets mouse events be mapped back to cells.
         let hint = self.terminal_size.clone();
-        let char_width = metrics.char_width;
+        let origin = self.terminal_origin.clone();
         div()
             .on_children_prepainted(
                 move |bounds: Vec<Bounds<Pixels>>, _window: &mut Window, _app: &mut App| {
                     let Some(bounds) = bounds.first() else {
                         return;
                     };
+                    origin.set((f32::from(bounds.origin.x), f32::from(bounds.origin.y)));
                     // Half a pixel of slack: `7.2 * 100` is `720.00003` in f32,
                     // which would otherwise cost a whole column.
                     let cols = ((f32::from(bounds.size.width) + 0.5) / char_width).floor();
@@ -400,6 +499,9 @@ impl PodmanDesktop {
                     }
                 },
             )
+            .on_any_mouse_down(cx.listener(Self::terminal_mouse_down))
+            .capture_any_mouse_up(cx.listener(Self::terminal_mouse_up))
+            .on_mouse_move(cx.listener(Self::terminal_mouse_move))
             .id("terminal-grid")
             .flex_1()
             .min_h(px(0.))
@@ -410,45 +512,325 @@ impl PodmanDesktop {
             .track_focus(&self.terminal_focus)
             .on_key_down(cx.listener(Self::terminal_key))
             .on_scroll_wheel(cx.listener(Self::terminal_scroll))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.terminal_focus.focus(window);
-                    cx.notify();
-                }),
-            )
             .flex()
             .flex_col()
             .child(lines)
             .into_any_element()
     }
 
-    /// Mouse wheel scrolls through the emulator's scrollback.
+    /// Mouse wheel scrolls the emulator's scrollback, unless the running
+    /// program asked to receive mouse events.
     fn terminal_scroll(
         &mut self,
         event: &ScrollWheelEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let lines = match event.delta {
-            ScrollDelta::Lines(point) => point.y,
-            ScrollDelta::Pixels(point) => f32::from(point.y) / LINE_HEIGHT,
+        let (sideways, lines) = match event.delta {
+            ScrollDelta::Lines(point) => (point.x, point.y),
+            ScrollDelta::Pixels(point) => (
+                f32::from(point.x) / LINE_HEIGHT,
+                f32::from(point.y) / LINE_HEIGHT,
+            ),
         };
-        if lines.abs() < 0.01 {
+        if lines.abs() < 0.01 && sideways.abs() < 0.01 {
             return;
         }
+
+        let Some(session) = self.terminal.as_ref() else {
+            return;
+        };
+        if session.mouse_mode() != vt100::MouseProtocolMode::None {
+            // One report per event: X11 delivers exactly one event per notch, and
+            // the program's own bindings decide how far to scroll.
+            let cell = self
+                .terminal_cell_at(event.position)
+                .unwrap_or(TermPos { row: 0, col: 0 });
+            let button = if lines.abs() >= sideways.abs() {
+                if lines > 0.0 {
+                    TermMouseButton::WheelUp
+                } else {
+                    TermMouseButton::WheelDown
+                }
+            } else if sideways > 0.0 {
+                TermMouseButton::WheelLeft
+            } else {
+                TermMouseButton::WheelRight
+            };
+            let bytes = encode_mouse(
+                session.mouse_encoding(),
+                MouseAction::Press,
+                button,
+                cell.col,
+                cell.row,
+                event.modifiers,
+            );
+            session.write(&bytes);
+            return;
+        }
+
         // One wheel notch moves three rows, like most terminal emulators.
         let delta = (lines * 3.0).round() as isize;
         if let Some(session) = self.terminal.as_mut() {
             if session.scroll_by(delta) {
+                // Old coordinates no longer match what is drawn.
+                self.terminal_selection = None;
                 cx.notify();
             }
         }
     }
 
+    fn terminal_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_focus.focus(window);
+        let Some(cell) = self.terminal_cell_at(event.position) else {
+            return;
+        };
+        let Some(session) = self.terminal.as_ref() else {
+            return;
+        };
+
+        if session.mouse_mode() != vt100::MouseProtocolMode::None {
+            let bytes = encode_mouse(
+                session.mouse_encoding(),
+                MouseAction::Press,
+                term_mouse_button(event.button),
+                cell.col,
+                cell.row,
+                event.modifiers,
+            );
+            session.write(&bytes);
+            return;
+        }
+
+        if event.button != MouseButton::Left {
+            return;
+        }
+        let last_col = session.size().1.saturating_sub(1);
+        self.terminal_selection = match event.click_count {
+            // Double-click selects the word, triple-click the whole line.
+            2 => Some(self.terminal_word_at(cell)),
+            count if count >= 3 => Some((
+                TermPos {
+                    row: cell.row,
+                    col: 0,
+                },
+                TermPos {
+                    row: cell.row,
+                    col: last_col,
+                },
+            )),
+            _ => Some((cell, cell)),
+        };
+        cx.notify();
+    }
+
+    fn terminal_mouse_up(
+        &mut self,
+        event: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(cell) = self.terminal_cell_at(event.position) else {
+            return;
+        };
+        let Some(session) = self.terminal.as_ref() else {
+            return;
+        };
+        if session.mouse_mode() == vt100::MouseProtocolMode::None {
+            // A click that did not turn into a drag leaves no selection.
+            if let Some((anchor, active)) = self.terminal_selection {
+                if anchor == active {
+                    self.terminal_selection = None;
+                    cx.notify();
+                }
+            }
+            return;
+        }
+        let bytes = encode_mouse(
+            session.mouse_encoding(),
+            MouseAction::Release,
+            term_mouse_button(event.button),
+            cell.col,
+            cell.row,
+            event.modifiers,
+        );
+        session.write(&bytes);
+        cx.notify();
+    }
+
+    fn terminal_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(cell) = self.terminal_cell_at(event.position) else {
+            return;
+        };
+        let Some(session) = self.terminal.as_ref() else {
+            return;
+        };
+        let mode = session.mouse_mode();
+
+        if mode != vt100::MouseProtocolMode::None {
+            let motion = match mode {
+                vt100::MouseProtocolMode::AnyMotion => true,
+                vt100::MouseProtocolMode::ButtonMotion => event.pressed_button.is_some(),
+                _ => false,
+            };
+            if motion {
+                let bytes = encode_mouse(
+                    session.mouse_encoding(),
+                    MouseAction::Motion,
+                    event
+                        .pressed_button
+                        .map_or(TermMouseButton::None, term_mouse_button),
+                    cell.col,
+                    cell.row,
+                    event.modifiers,
+                );
+                session.write(&bytes);
+            }
+            return;
+        }
+
+        // Dragging out a selection.
+        if event.pressed_button == Some(MouseButton::Left) {
+            if let Some((anchor, active)) = self.terminal_selection {
+                if active != cell {
+                    self.terminal_selection = Some((anchor, cell));
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Map a window position to the cell under it, clamped to the grid.
+    fn terminal_cell_at(&self, position: Point<Pixels>) -> Option<TermPos> {
+        let session = self.terminal.as_ref()?;
+        let metrics = self.terminal_font.borrow();
+        let char_width = metrics.as_ref()?.char_width;
+        let (origin_x, origin_y) = self.terminal_origin.get();
+        let (rows, cols) = session.size();
+
+        let x = f32::from(position.x) - origin_x;
+        let y = f32::from(position.y) - origin_y;
+        if x < 0.0 || y < 0.0 {
+            return None;
+        }
+        let col = (x / char_width)
+            .floor()
+            .min(f32::from(cols.saturating_sub(1)));
+        let row = (y / LINE_HEIGHT)
+            .floor()
+            .min(f32::from(rows.saturating_sub(1)));
+        Some(TermPos {
+            row: row as u16,
+            col: col as u16,
+        })
+    }
+
+    /// The word under the cursor, for double-click selection.
+    fn terminal_word_at(&self, cell: TermPos) -> (TermPos, TermPos) {
+        let Some(session) = self.terminal.as_ref() else {
+            return (cell, cell);
+        };
+        let screen = session.screen();
+        let cols = session.size().1;
+        let is_word = |col: u16| {
+            screen
+                .cell(cell.row, col)
+                .is_some_and(|cell| !cell.contents().trim().is_empty())
+        };
+        if !is_word(cell.col) {
+            return (cell, cell);
+        }
+        let mut start = cell.col;
+        while start > 0 && is_word(start - 1) {
+            start -= 1;
+        }
+        let mut end = cell.col;
+        while end + 1 < cols && is_word(end + 1) {
+            end += 1;
+        }
+        (
+            TermPos {
+                row: cell.row,
+                col: start,
+            },
+            TermPos {
+                row: cell.row,
+                col: end,
+            },
+        )
+    }
+
+    /// Copy the selected cells to the system clipboard. Returns whether there
+    /// was a selection to copy.
+    fn copy_terminal_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some((anchor, active)) = self.terminal_selection else {
+            return false;
+        };
+        let Some(session) = self.terminal.as_ref() else {
+            return false;
+        };
+        let (start, end) = terminal_selection_range(anchor, active);
+        let text = selection_text(session.screen(), start, end);
+        if text.is_empty() {
+            return false;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        true
+    }
+
+    /// Send the clipboard's text to the shell, bracketed if it asked for it.
+    fn paste_into_terminal(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        let Some(session) = self.terminal.as_mut() else {
+            return false;
+        };
+        if session.closed {
+            return false;
+        }
+        session.scroll_to_bottom();
+        session.write(&encode_paste(&text, session.bracketed_paste()));
+        true
+    }
+
     fn terminal_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         let keystroke = &event.keystroke;
+
+        // Terminal shortcuts take precedence over the shell's Ctrl+letter
+        // bindings.
+        if keystroke.modifiers.control && keystroke.modifiers.shift {
+            match keystroke.key.as_str() {
+                "c" => {
+                    if self.copy_terminal_selection(cx) {
+                        cx.notify();
+                    }
+                    return;
+                }
+                "v" => {
+                    if self.paste_into_terminal(cx) {
+                        cx.notify();
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Full-screen programs put the terminal in application cursor mode and
         // expect `ESC O x` for the arrows.
         let application_cursor = self
@@ -462,13 +844,15 @@ impl PodmanDesktop {
             keystroke.key_char.as_deref(),
             application_cursor,
         ) {
-            if let Some(session) = &self.terminal {
+            if let Some(session) = self.terminal.as_mut() {
                 if !session.closed {
+                    // Typing takes you back to the live viewport, like xterm.
+                    session.scroll_to_bottom();
                     session.write(&bytes);
                 }
             }
+            cx.notify();
         }
-        cx.notify();
     }
 }
 
@@ -489,16 +873,168 @@ fn pick_monospace_family(names: Vec<String>) -> SharedString {
     SharedString::from("monospace")
 }
 
-fn terminal_run(text: &str, style: (u32, u32, bool), family: &SharedString) -> Div {
-    let (fg, bg, bold) = style;
+/// Cursor shape requested by the program (`DECSCUSR`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CursorShape {
+    Block,
+    Underline,
+    Bar,
+}
+
+/// Order two selection endpoints so the first one precedes the second.
+fn terminal_selection_range(anchor: TermPos, active: TermPos) -> (TermPos, TermPos) {
+    let anchor_first = (anchor.row, anchor.col) <= (active.row, active.col);
+    if anchor_first {
+        (anchor, active)
+    } else {
+        (active, anchor)
+    }
+}
+
+/// Whether `(row, col)` falls inside an inclusive selection range.
+fn contains(range: (TermPos, TermPos), row: u16, col: u16) -> bool {
+    let (start, end) = range;
+    let after_start = (row, col) >= (start.row, start.col);
+    let before_end = (row, col) <= (end.row, end.col);
+    after_start && before_end
+}
+
+/// Linear blend of two `0xRRGGBB` colors; `amount` is the weight of `to`.
+fn blend(from: u32, to: u32, amount: f32) -> u32 {
+    let channel = |shift: u32| {
+        let start = ((from >> shift) & 0xff) as f32;
+        let end = ((to >> shift) & 0xff) as f32;
+        (start + (end - start) * amount).round() as u32
+    };
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
+fn term_mouse_button(button: MouseButton) -> TermMouseButton {
+    match button {
+        MouseButton::Left => TermMouseButton::Left,
+        MouseButton::Middle => TermMouseButton::Middle,
+        MouseButton::Right => TermMouseButton::Right,
+        _ => TermMouseButton::None,
+    }
+}
+
+/// Buttons the running program can be told about.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TermMouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+    WheelLeft,
+    WheelRight,
+    None,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+/// Encode a mouse report in the wire format the program asked for.
+fn encode_mouse(
+    encoding: vt100::MouseProtocolEncoding,
+    action: MouseAction,
+    button: TermMouseButton,
+    col: u16,
+    row: u16,
+    modifiers: Modifiers,
+) -> Vec<u8> {
+    let base = match button {
+        TermMouseButton::Left => 0,
+        TermMouseButton::Middle => 1,
+        TermMouseButton::Right => 2,
+        TermMouseButton::WheelUp => 64,
+        TermMouseButton::WheelDown => 65,
+        TermMouseButton::WheelLeft => 66,
+        TermMouseButton::WheelRight => 67,
+        TermMouseButton::None => 3,
+    };
+    let modifiers = u32::from(modifiers.shift) * 4
+        + u32::from(modifiers.alt) * 8
+        + u32::from(modifiers.control) * 16;
+
+    let code = match action {
+        MouseAction::Motion => base + 32 + modifiers,
+        // SGR keeps the button on release and marks it with `m` instead; the
+        // legacy encodings report button 3.
+        MouseAction::Release if encoding == vt100::MouseProtocolEncoding::Sgr => base + modifiers,
+        MouseAction::Release => 3 + modifiers,
+        MouseAction::Press => base + modifiers,
+    };
+
+    if encoding == vt100::MouseProtocolEncoding::Sgr {
+        let terminator = if action == MouseAction::Release {
+            'm'
+        } else {
+            'M'
+        };
+        return format!("\x1b[<{code};{};{}{terminator}", col + 1, row + 1).into_bytes();
+    }
+
+    // The legacy encodings carry one byte per field; the UTF-8 variant lifts
+    // the 223-coordinate limit by sending code points instead.
+    let mut bytes = vec![0x1b, b'[', b'M'];
+    for value in [code, u32::from(col) + 1, u32::from(row) + 1] {
+        let value = if encoding == vt100::MouseProtocolEncoding::Utf8 {
+            32 + value
+        } else {
+            32 + value.min(223)
+        };
+        if let Some(character) = char::from_u32(value) {
+            let mut buffer = [0u8; 4];
+            bytes.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+        }
+    }
+    bytes
+}
+
+/// Bytes for a paste. Bracketed paste keeps multi-line text from being run
+/// line by line; without it the shell expects carriage returns.
+fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    let normalized = text.replace("\r\n", "\n");
+    if bracketed {
+        // Pasted text must not be able to close the bracket itself.
+        let sanitized = normalized.replace("\x1b[201~", "");
+        let mut bytes = b"\x1b[200~".to_vec();
+        bytes.extend_from_slice(sanitized.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        normalized.replace('\n', "\r").into_bytes()
+    }
+}
+
+/// Text in an inclusive cell range, with trailing blanks removed per line.
+fn selection_text(screen: &vt100::Screen, start: TermPos, end: TermPos) -> String {
+    let cols = screen.size().1.get();
+    let end_col = end.col.saturating_add(1).min(cols);
+    screen
+        .contents_between(start.row, start.col, end.row, end_col)
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn terminal_run(text: &str, style: CellStyle, family: &SharedString) -> Div {
     div()
         .flex_shrink_0()
         .whitespace_nowrap()
         .text_size(px(FONT_SIZE))
         .font_family(family.clone())
-        .text_color(rgb(fg))
-        .when(bg != theme().bg, |el| el.bg(rgb(bg)))
-        .when(bold, |el| el.font_weight(FontWeight::BOLD))
+        .text_color(rgb(style.fg))
+        .when(style.bg != theme().bg, |el| el.bg(rgb(style.bg)))
+        .when(style.bold, |el| el.font_weight(FontWeight::BOLD))
+        .when(style.italic, |el| el.italic())
+        .when(style.underline, |el| el.underline())
         .child(text.to_string())
 }
 
@@ -681,5 +1217,171 @@ mod tests {
     fn falls_back_to_the_generic_family() {
         let names = vec!["Arial".to_string()];
         assert_eq!(pick_monospace_family(names).as_ref(), "monospace");
+    }
+
+    fn modifiers(shift: bool, alt: bool, control: bool) -> Modifiers {
+        Modifiers {
+            shift,
+            alt,
+            control,
+            ..Modifiers::default()
+        }
+    }
+
+    #[test]
+    fn encodes_sgr_mouse_reports() {
+        let none = Modifiers::default();
+        let sgr = vt100::MouseProtocolEncoding::Sgr;
+        assert_eq!(
+            encode_mouse(sgr, MouseAction::Press, TermMouseButton::Left, 0, 0, none),
+            b"\x1b[<0;1;1M".to_vec()
+        );
+        assert_eq!(
+            encode_mouse(sgr, MouseAction::Release, TermMouseButton::Left, 0, 0, none),
+            b"\x1b[<0;1;1m".to_vec()
+        );
+        assert_eq!(
+            encode_mouse(sgr, MouseAction::Motion, TermMouseButton::Left, 4, 2, none),
+            b"\x1b[<32;5;3M".to_vec()
+        );
+        assert_eq!(
+            encode_mouse(sgr, MouseAction::Motion, TermMouseButton::None, 1, 1, none),
+            b"\x1b[<35;2;2M".to_vec()
+        );
+        assert_eq!(
+            encode_mouse(
+                sgr,
+                MouseAction::Press,
+                TermMouseButton::WheelUp,
+                10,
+                20,
+                none
+            ),
+            b"\x1b[<64;11;21M".to_vec()
+        );
+        // Shift adds 4, alt 8 and ctrl 16.
+        assert_eq!(
+            encode_mouse(
+                sgr,
+                MouseAction::Press,
+                TermMouseButton::Right,
+                2,
+                3,
+                modifiers(true, true, true)
+            ),
+            b"\x1b[<30;3;4M".to_vec()
+        );
+    }
+
+    #[test]
+    fn encodes_legacy_mouse_reports() {
+        let none = Modifiers::default();
+        let legacy = vt100::MouseProtocolEncoding::Default;
+        assert_eq!(
+            encode_mouse(
+                legacy,
+                MouseAction::Press,
+                TermMouseButton::Left,
+                0,
+                0,
+                none
+            ),
+            vec![0x1b, b'[', b'M', 32, 33, 33]
+        );
+        // A release is reported as button 3 in the legacy formats.
+        assert_eq!(
+            encode_mouse(
+                legacy,
+                MouseAction::Release,
+                TermMouseButton::Left,
+                5,
+                5,
+                modifiers(true, false, false)
+            ),
+            vec![0x1b, b'[', b'M', 32 + 3 + 4, 32 + 6, 32 + 6]
+        );
+        // The UTF-8 encoding keeps working past the 223 column limit.
+        let report = encode_mouse(
+            vt100::MouseProtocolEncoding::Utf8,
+            MouseAction::Press,
+            TermMouseButton::Left,
+            300,
+            10,
+            none,
+        );
+        assert_eq!(&report[..3], b"\x1b[M");
+        let rest = std::str::from_utf8(&report[3..]).unwrap();
+        let decoded: Vec<u32> = rest.chars().map(u32::from).collect();
+        assert_eq!(decoded, vec![32, 32 + 301, 32 + 11]);
+    }
+
+    #[test]
+    fn pastes_without_brackets_use_carriage_returns() {
+        assert_eq!(encode_paste("a\nb", false), b"a\rb".to_vec());
+        assert_eq!(encode_paste("a\r\nb", false), b"a\rb".to_vec());
+    }
+
+    #[test]
+    fn bracketed_paste_is_wrapped_and_sanitized() {
+        assert_eq!(
+            encode_paste("line 1\nline 2", true),
+            b"\x1b[200~line 1\nline 2\x1b[201~".to_vec()
+        );
+        assert_eq!(
+            encode_paste("evil\x1b[201~rm -rf /", true),
+            b"\x1b[200~evilrm -rf /\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn selection_range_is_ordered() {
+        let first = TermPos { row: 1, col: 4 };
+        let second = TermPos { row: 2, col: 1 };
+        assert_eq!(terminal_selection_range(first, second), (first, second));
+        assert_eq!(terminal_selection_range(second, first), (first, second));
+        assert_eq!(terminal_selection_range(first, first), (first, first));
+    }
+
+    #[test]
+    fn selection_contains_the_whole_span() {
+        let start = TermPos { row: 1, col: 3 };
+        let end = TermPos { row: 3, col: 2 };
+        assert!(!contains((start, end), 1, 2));
+        assert!(contains((start, end), 1, 3));
+        assert!(contains((start, end), 2, 0));
+        assert!(contains((start, end), 3, 2));
+        assert!(!contains((start, end), 3, 3));
+        assert!(!contains((start, end), 4, 0));
+    }
+
+    #[test]
+    fn selection_text_trims_trailing_blanks() {
+        let mut parser = vt100::Parser::new(
+            std::num::NonZeroU16::new(4).unwrap(),
+            std::num::NonZeroU16::new(20).unwrap(),
+            0,
+        );
+        parser.process(b"hello world\r\nsecond line\r\n");
+
+        let line = selection_text(
+            parser.screen(),
+            TermPos { row: 0, col: 0 },
+            TermPos { row: 0, col: 4 },
+        );
+        assert_eq!(line, "hello");
+
+        let lines = selection_text(
+            parser.screen(),
+            TermPos { row: 0, col: 6 },
+            TermPos { row: 1, col: 5 },
+        );
+        assert_eq!(lines, "world\nsecond");
+    }
+
+    #[test]
+    fn dimming_blends_towards_the_background() {
+        assert_eq!(blend(0xffffff, 0x000000, 1.0), 0x000000);
+        assert_eq!(blend(0xffffff, 0x000000, 0.0), 0xffffff);
+        assert_eq!(blend(0xffffff, 0x000000, 0.5), 0x808080);
     }
 }

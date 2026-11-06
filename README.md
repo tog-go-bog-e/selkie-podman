@@ -21,8 +21,10 @@ Current scope: **manage containers and images on the local Podman engine**.
   auto-follow, **Load older**, clear and copy), a **Stats** tab with live CPU,
   memory and network graphs, and an **interactive terminal** (`podman exec` +
   `/bin/sh`) that resizes with the pane, keeps 2000 lines of scrollback (mouse
-  wheel plus a **Live** button) and honours application cursor keys. Containers belonging to a compose project show
-  `project/service` under their name.
+  wheel plus a **Live** button), honours application cursor keys, and supports
+  drag/double-click selection with copy (`Ctrl+Shift+C`) and paste
+  (`Ctrl+Shift+V`, bracketed when the program asks). Containers belonging to a
+  compose project show `project/service` under their name.
 - **Compose**: projects grouped from container labels (`com.docker.compose.*`
   and `io.podman.compose.*`), with running/total status, services, compose file
   and working directory. **Up** (`up -d`), **Restart**, **Build** and **Down**
@@ -281,9 +283,13 @@ the **Connections** tab to make this app talk to the VM.
   monospace runs. The grid follows the pane: the details layout is measured
   during prepaint, the chosen font's advance (from `TextSystem::advance`) turns
   the pixel width into columns, and `Parser::set_size` plus `TIOCSWINSZ` resize
-  the emulator and the pty. Keystrokes are translated to PTY bytes
-  (printable characters, arrows, Home/End, Delete, Tab, Enter, Backspace,
-  Ctrl+letter, Alt). Leaving the terminal closes the PTY so the shell exits
+  the emulator and the pty. The emulator's callbacks feed `OSC 0/2` titles into
+  the pane header. Keystrokes are translated to PTY bytes (printable
+  characters, arrows, Home/End, Delete, Tab, Enter, Backspace, Ctrl+letter,
+  Alt); `Ctrl+Shift+C`/`V` copy and paste (wrapped in `ESC[200~`/`ESC[201~`
+  when the program enabled bracketed paste), and mouse events are reported to
+  the program when it asked for them (`DECSET 9/1000/1002/1003`, SGR or the
+  legacy encodings). Leaving the terminal closes the PTY so the shell exits
   cleanly, and the session is kept when switching to Summary/Logs/Stats. The
   exec client also gets `PR_SET_PDEATHSIG`, so it cannot outlive a hard kill of
   the app.
@@ -346,13 +352,17 @@ prioritized next milestones and verification checklist.
   (about four minutes at 2 s) and are not persisted. Offline/stopped containers
   show a notice instead of graphs.
 - The terminal resizes with the details pane (the grid is measured each frame and
-  the pty is resized with `TIOCSWINSZ`, so full-screen programs reflow), keeps
-  2000 lines of scrollback and shows a block cursor at the prompt. It still has
-  no text selection, copy/paste, mouse reporting, hyperlinks or bracketed paste,
-  and always runs `/bin/sh`. While it has focus, keys (including app shortcuts
-  such as `Ctrl+Q`) go to the shell; click elsewhere to use shortcuts. `podman
-  exec` requires a running container. If the app is hard-killed while a terminal
-  is open, the exec client dies with it, but podman can leave the exec conmon and
+  the pty is resized with `TIOCSWINSZ`, so full-screen programs reflow) and
+  keeps 2000 lines of scrollback. It supports mouse-drag selection, double-click
+  for a word and triple-click for a line, `Ctrl+Shift+C` to copy and
+  `Ctrl+Shift+V` to paste (bracketed when the program enables it), the cursor
+  shapes programs request with `DECSCUSR`, dim/italic/underline/bold/inverse
+  text, `OSC 0/2` window titles and mouse reporting; hyperlinks (`OSC 8`) are
+  not supported because the `vt100` crate does not expose them, and the shell
+  is always `/bin/sh`. While it has focus, keys (including app shortcuts such as
+  `Ctrl+Q`) go to the shell; click elsewhere to use shortcuts. `podman exec`
+  requires a running container. If the app is hard-killed while a terminal is
+  open, the exec client dies with it, but podman can leave the exec conmon and
   an idle shell inside the container until it is restarted (exec sessions have
   no reap API). Grid sizing measures the real advance of the chosen monospace
   font (the first installed family from a preference list such as JetBrains
