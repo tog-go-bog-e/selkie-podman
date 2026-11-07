@@ -332,6 +332,7 @@ pub enum InspectKind {
     Pod,
     Volume,
     Network,
+    Secret,
 }
 
 impl InspectKind {
@@ -342,6 +343,7 @@ impl InspectKind {
             InspectKind::Pod => &["pod"],
             InspectKind::Volume => &["volume"],
             InspectKind::Network => &["network"],
+            InspectKind::Secret => &["secret"],
         };
         let mut args: Vec<String> = prefix.iter().map(|arg| arg.to_string()).collect();
         args.push("inspect".to_string());

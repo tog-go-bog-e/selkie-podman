@@ -10,6 +10,7 @@ impl PodmanDesktop {
             Tab::Pods => self.pod_row(self.visible_indices[ix], cx),
             Tab::Volumes => self.volume_row(self.visible_indices[ix], cx),
             Tab::Networks => self.network_row(self.visible_indices[ix], cx),
+            Tab::Secrets => self.secret_row(self.visible_indices[ix], cx),
             Tab::Machines => self.machine_row(self.visible_indices[ix], cx),
             Tab::Connections => self.connection_row(self.visible_indices[ix], cx),
             Tab::Dashboard | Tab::Accounts | Tab::Settings => div().into_any_element(),
@@ -652,6 +653,86 @@ impl PodmanDesktop {
         row.into_any_element()
     }
 
+    fn secret_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let secret = &self.snapshot.secrets[ix];
+        let selected = matches!(&self.selection, Some(Selection::Secret(id)) if id == &secret.id);
+        let compact = self.selection.is_some();
+        let fixed_widths = if compact {
+            150.0
+        } else {
+            100.0 + 150.0 + 150.0
+        };
+        let name_width = (self.list_content_width() - fixed_widths).max(80.0);
+        let select_id = secret.id.clone();
+        let menu_id = secret.id.clone();
+        let group = SharedString::from(format!("secret-row-{ix}"));
+
+        let mut row = div()
+            .group(group)
+            .id(ix)
+            .relative()
+            .flex()
+            .items_center()
+            .w_full()
+            .h(px(ROW_HEIGHT))
+            .px_4()
+            .bg(rgb(theme().bg))
+            .border_b_1()
+            .border_color(rgb(theme().border))
+            .cursor_pointer()
+            .when(selected, |el| el.bg(rgb(theme().accent_soft)))
+            .when(!selected, |el| {
+                el.hover(|style| style.bg(rgb(theme().hover_bg)))
+            })
+            .on_click(cx.listener(move |this, _, _, cx| this.select_secret(select_id.clone(), cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.open_context_menu(
+                        event.position,
+                        Selection::Secret(menu_id.clone()),
+                        window,
+                        cx,
+                    )
+                }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(
+                        div()
+                            .w_full()
+                            .text_sm()
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(truncate_sm(&secret.name, name_width)),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .text_xs()
+                            .text_color(rgb(theme().faint))
+                            .whitespace_nowrap()
+                            .truncate()
+                            .child(truncate_xs(&secret.id, name_width)),
+                    ),
+            );
+
+        if !compact {
+            row = row.child(cell(secret.driver.clone(), 100.));
+        }
+        row = row.child(muted_cell(secret.created.clone(), 150.));
+        if !compact {
+            row = row.child(muted_cell(secret.updated.clone(), 150.));
+        }
+
+        row = row.child(self.secret_row_actions(ix, secret, cx));
+        row.into_any_element()
+    }
+
     fn network_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let network = &self.snapshot.networks[ix];
         let selected =
@@ -1067,6 +1148,46 @@ impl PodmanDesktop {
                 cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
                     this.open_modal(Modal::DeleteVolume { name: name.clone() }, window, cx);
+                }),
+            ))
+    }
+
+    fn secret_row_actions(&self, ix: usize, secret: &Secret, cx: &mut Context<Self>) -> Div {
+        let group = SharedString::from(format!("secret-row-{ix}"));
+        let busy = self.busy.is_some();
+        let id = secret.id.clone();
+        let name = secret.name.clone();
+
+        div()
+            .invisible()
+            .group_hover(group, |style| style.visible())
+            .absolute()
+            .right_4()
+            .top_0()
+            .bottom_0()
+            .flex()
+            .items_center()
+            .px_1()
+            .rounded_md()
+            .bg(rgb(theme().panel_bg))
+            .border_1()
+            .border_color(rgb(theme().border))
+            .child(row_action_button(
+                SharedString::from(format!("secret-row-{ix}-delete")),
+                "Delete",
+                !busy,
+                theme().red,
+                theme().red_bg,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_modal(
+                        Modal::DeleteSecret {
+                            id: id.clone(),
+                            name: name.clone(),
+                        },
+                        window,
+                        cx,
+                    );
                 }),
             ))
     }

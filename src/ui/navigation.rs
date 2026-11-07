@@ -96,6 +96,10 @@ impl PodmanDesktop {
                 .visible_indices
                 .iter()
                 .position(|&index| &self.snapshot.networks[index].name == name),
+            (Some(Selection::Secret(id)), Tab::Secrets) => self
+                .visible_indices
+                .iter()
+                .position(|&index| &self.snapshot.secrets[index].id == id),
             _ => None,
         }
     }
@@ -143,6 +147,10 @@ impl PodmanDesktop {
                 let name = self.snapshot.networks[index].name.clone();
                 self.select_network(name, cx);
             }
+            Tab::Secrets => {
+                let id = self.snapshot.secrets[index].id.clone();
+                self.select_secret(id, cx);
+            }
             Tab::Machines => {
                 let name = self.local.machines[index].name.clone();
                 self.select_machine(name, cx);
@@ -170,6 +178,7 @@ impl PodmanDesktop {
             Selection::Pod(id) => self.select_pod(id, cx),
             Selection::Volume(name) => self.select_volume(name, cx),
             Selection::Network(name) => self.select_network(name, cx),
+            Selection::Secret(id) => self.select_secret(id, cx),
             Selection::Machine(name) => self.select_machine(name, cx),
             Selection::Connection(name) => self.select_connection(name, cx),
         }
@@ -255,7 +264,10 @@ impl PodmanDesktop {
                             .map(|details| DetailsState::Volume(Box::new(details))),
                         Selection::Network(name) => podman::inspect_network(name)
                             .map(|details| DetailsState::Network(Box::new(details))),
-                        Selection::Image(_) | Selection::Compose(_) => Ok(DetailsState::None),
+                        // The secret list already carries everything the summary shows.
+                        Selection::Image(_) | Selection::Compose(_) | Selection::Secret(_) => {
+                            Ok(DetailsState::None)
+                        }
                         Selection::Machine(_) | Selection::Connection(_) => Ok(DetailsState::None),
                     }
                     .unwrap_or_else(DetailsState::Error)
@@ -308,7 +320,8 @@ impl PodmanDesktop {
             | Selection::Image(key)
             | Selection::Pod(key)
             | Selection::Volume(key)
-            | Selection::Network(key) => key.clone(),
+            | Selection::Network(key)
+            | Selection::Secret(key) => key.clone(),
             Selection::Compose(_) | Selection::Machine(_) | Selection::Connection(_) => return,
         };
 

@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use crate::podman::{
     self, ComposeAction, ComposeProject, Connection, Container, ContainerAction, ContainerDetails,
     Image, LocalState, Machine, MachineAction, Network, NetworkDetails, Pod, PodAction, PodDetails,
-    Snapshot, StatsSample, Volume, VolumeDetails,
+    Secret, Snapshot, StatsSample, Volume, VolumeDetails,
 };
 use crate::terminal::TerminalSession;
 
@@ -86,6 +86,7 @@ pub(crate) enum Tab {
     Pods,
     Volumes,
     Networks,
+    Secrets,
     Machines,
     Connections,
     Accounts,
@@ -110,6 +111,8 @@ enum Selection {
     Pod(String),
     Volume(String),
     Network(String),
+    /// A Podman secret, by ID.
+    Secret(String),
     Machine(String),
     Connection(String),
 }
@@ -131,43 +134,180 @@ enum LogTarget {
     },
 }
 
+/// One `KEY=VALUE` row in the build dialog.
+#[derive(Clone, Default)]
+struct BuildArg {
+    key: String,
+    value: String,
+}
+
+/// A well-known platform offered as a card in the build dialog.
+struct PlatformPreset {
+    /// The value passed to `--platform` (e.g. `linux/amd64`).
+    platform: &'static str,
+    description: &'static str,
+    /// Short architecture label shown in the card's chip.
+    arch: &'static str,
+}
+
+const BUILD_PLATFORMS: [PlatformPreset; 5] = [
+    PlatformPreset {
+        platform: "linux/amd64",
+        description: "Intel and AMD x86_64 systems",
+        arch: "AMD64",
+    },
+    PlatformPreset {
+        platform: "linux/arm64",
+        description: "ARM® aarch64 systems",
+        arch: "ARM64",
+    },
+    PlatformPreset {
+        platform: "linux/ppc64le",
+        description: "Power ppc64le systems",
+        arch: "PPC64LE",
+    },
+    PlatformPreset {
+        platform: "linux/s390x",
+        description: "IBM s390x zsystems",
+        arch: "S390X",
+    },
+    PlatformPreset {
+        platform: "wasi/wasm",
+        description: "WebAssembly",
+        arch: "WASI",
+    },
+];
+
+/// The platform Podman builds for when `--platform` is omitted: the host's.
+fn default_platform() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "linux/arm64",
+        "powerpc64" => "linux/ppc64le",
+        "s390x" => "linux/s390x",
+        "wasm32" => "wasi/wasm",
+        _ => "linux/amd64",
+    }
+}
+
+/// Which build-dialog input has the keyboard.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BuildField {
     Containerfile,
     Tag,
     Context,
-    Platform,
-    Args,
+    /// Key cell of build-argument row `index`.
+    ArgKey(usize),
+    /// Value cell of build-argument row `index`.
+    ArgValue(usize),
+    /// The inline “New platform” input.
+    NewPlatform,
 }
 
-impl BuildField {
-    const ALL: [BuildField; 5] = [
-        BuildField::Containerfile,
-        BuildField::Tag,
-        BuildField::Context,
-        BuildField::Platform,
-        BuildField::Args,
-    ];
+/// State of the build dialog: everything the form needs, including which
+/// fields are expanded and which one has focus.
+#[derive(Clone)]
+struct BuildForm {
+    containerfile: String,
+    tag: String,
+    context: String,
+    args: Vec<BuildArg>,
+    /// Selected target platforms; empty uses the engine default.
+    platforms: Vec<String>,
+    /// Platforms added through “New platform”, shown as extra cards.
+    custom_platforms: Vec<String>,
+    /// Text typed into the “New platform” card.
+    new_platform: String,
+    new_platform_open: bool,
+    /// Check the Containerfile's registries are known before building.
+    validate_registries: bool,
+    /// Whether the advanced fields are expanded.
+    show_options: bool,
+    field: BuildField,
+}
 
-    fn index(self) -> usize {
-        match self {
-            BuildField::Containerfile => 0,
-            BuildField::Tag => 1,
-            BuildField::Context => 2,
-            BuildField::Platform => 3,
-            BuildField::Args => 4,
+impl Default for BuildForm {
+    fn default() -> Self {
+        Self {
+            containerfile: String::new(),
+            tag: String::new(),
+            context: String::new(),
+            // The dialog always shows one empty row, like upstream.
+            args: vec![BuildArg::default()],
+            platforms: vec![default_platform().to_string()],
+            custom_platforms: Vec::new(),
+            new_platform: String::new(),
+            new_platform_open: false,
+            validate_registries: true,
+            show_options: false,
+            field: BuildField::Containerfile,
+        }
+    }
+}
+
+impl BuildForm {
+    fn selected(&self, platform: &str) -> bool {
+        self.platforms.iter().any(|value| value == platform)
+    }
+
+    fn toggle_platform(&mut self, platform: &str) {
+        match self.platforms.iter().position(|value| value == platform) {
+            Some(index) => {
+                self.platforms.remove(index);
+            }
+            None => self.platforms.push(platform.to_string()),
         }
     }
 
-    fn from_index(index: usize) -> Self {
-        Self::ALL
-            .get(index)
-            .copied()
-            .unwrap_or(BuildField::Containerfile)
+    /// Add the platform typed into the “New platform” card.
+    fn add_custom_platform(&mut self) -> Result<(), String> {
+        let platform = podman::validate_platform(&self.new_platform)?.to_string();
+        if !self.selected(&platform) {
+            self.platforms.push(platform.clone());
+            if !BUILD_PLATFORMS
+                .iter()
+                .any(|preset| preset.platform == platform)
+            {
+                self.custom_platforms.push(platform);
+            }
+        }
+        self.new_platform.clear();
+        self.new_platform_open = false;
+        self.field = BuildField::Tag;
+        Ok(())
     }
 
-    fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    fn arg_tokens(&self) -> Result<Vec<String>, String> {
+        let rows: Vec<(String, String)> = self
+            .args
+            .iter()
+            .map(|arg| (arg.key.clone(), arg.value.clone()))
+            .collect();
+        podman::build_args_from_rows(&rows)
+    }
+
+    /// Inputs in Tab order. The advanced fields only participate when visible.
+    fn fields(&self) -> Vec<BuildField> {
+        let mut fields = vec![BuildField::Containerfile, BuildField::Tag];
+        if self.show_options {
+            fields.push(BuildField::Context);
+            for index in 0..self.args.len() {
+                fields.push(BuildField::ArgKey(index));
+                fields.push(BuildField::ArgValue(index));
+            }
+            if self.new_platform_open {
+                fields.push(BuildField::NewPlatform);
+            }
+        }
+        fields
+    }
+
+    fn next_field(&self) -> BuildField {
+        let fields = self.fields();
+        let current = fields
+            .iter()
+            .position(|field| *field == self.field)
+            .unwrap_or(0);
+        fields[(current + 1) % fields.len()]
     }
 }
 
@@ -177,15 +317,17 @@ enum RunField {
     Ports,
     Env,
     Volumes,
+    Secrets,
     Command,
 }
 
 impl RunField {
-    const ALL: [RunField; 5] = [
+    const ALL: [RunField; 6] = [
         RunField::Name,
         RunField::Ports,
         RunField::Env,
         RunField::Volumes,
+        RunField::Secrets,
         RunField::Command,
     ];
 
@@ -195,7 +337,8 @@ impl RunField {
             RunField::Ports => 1,
             RunField::Env => 2,
             RunField::Volumes => 3,
-            RunField::Command => 4,
+            RunField::Secrets => 4,
+            RunField::Command => 5,
         }
     }
 
@@ -260,6 +403,31 @@ impl VolumeField {
 
     fn from_index(index: usize) -> Self {
         Self::ALL.get(index).copied().unwrap_or(VolumeField::Name)
+    }
+
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SecretField {
+    Name,
+    Data,
+}
+
+impl SecretField {
+    const ALL: [SecretField; 2] = [SecretField::Name, SecretField::Data];
+
+    fn index(self) -> usize {
+        match self {
+            SecretField::Name => 0,
+            SecretField::Data => 1,
+        }
+    }
+
+    fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or(SecretField::Name)
     }
 
     fn next(self) -> Self {
@@ -385,6 +553,10 @@ enum Modal {
     DeleteNetwork {
         name: String,
     },
+    DeleteSecret {
+        id: String,
+        name: String,
+    },
     ComposeDown {
         project: ComposeProject,
     },
@@ -392,12 +564,7 @@ enum Modal {
         name: String,
     },
     BuildImage {
-        containerfile: String,
-        tag: String,
-        context: String,
-        platform: String,
-        args: String,
-        field: BuildField,
+        form: BuildForm,
     },
     RunContainer {
         image: String,
@@ -405,6 +572,8 @@ enum Modal {
         ports: String,
         env: String,
         volumes: String,
+        /// `name`, `name:/path` or `name:VAR` tokens.
+        secrets: String,
         command: String,
         field: RunField,
     },
@@ -433,6 +602,12 @@ enum Modal {
         name: String,
         driver: String,
         field: VolumeField,
+    },
+    CreateSecret {
+        name: String,
+        /// Never shown: the dialog renders a mask.
+        data: String,
+        field: SecretField,
     },
     CreateNetwork {
         name: String,
@@ -471,6 +646,7 @@ impl Modal {
             ports: String::new(),
             env: String::new(),
             volumes: String::new(),
+            secrets: String::new(),
             command: String::new(),
             field: RunField::Name,
         }
@@ -481,6 +657,14 @@ impl Modal {
             name: String::new(),
             driver: String::new(),
             field: VolumeField::Name,
+        }
+    }
+
+    fn create_secret() -> Self {
+        Modal::CreateSecret {
+            name: String::new(),
+            data: String::new(),
+            field: SecretField::Name,
         }
     }
 
@@ -716,6 +900,8 @@ pub struct PodmanDesktop {
     root_focus: FocusHandle,
     initial_focus_done: bool,
     viewport_width: f32,
+    /// Last window height, used to keep dialogs inside the window.
+    viewport_height: f32,
     drag: Option<DragTarget>,
     drag_start_x: f32,
     drag_start_width: f32,
@@ -814,6 +1000,7 @@ impl PodmanDesktop {
             root_focus: cx.focus_handle(),
             initial_focus_done: false,
             viewport_width: 0.0,
+            viewport_height: 0.0,
             drag: None,
             drag_start_x: 0.0,
             drag_start_width: 0.0,
@@ -914,6 +1101,7 @@ impl PodmanDesktop {
             Tab::Pods => self.snapshot.pods.len(),
             Tab::Volumes => self.snapshot.volumes.len(),
             Tab::Networks => self.snapshot.networks.len(),
+            Tab::Secrets => self.snapshot.secrets.len(),
             Tab::Machines => self.local.machines.len(),
             Tab::Connections => self.local.connections.len(),
             Tab::Accounts => self.accounts.len(),
@@ -927,6 +1115,7 @@ impl PodmanDesktop {
             Tab::Pods => "pod",
             Tab::Volumes => "volume",
             Tab::Networks => "network",
+            Tab::Secrets => "secret",
             Tab::Machines => "machine",
             Tab::Connections => "connection",
             Tab::Accounts => "registry login",
@@ -1018,6 +1207,7 @@ fn inspect_kind(selection: &Selection) -> Option<podman::InspectKind> {
         Selection::Pod(_) => Some(podman::InspectKind::Pod),
         Selection::Volume(_) => Some(podman::InspectKind::Volume),
         Selection::Network(_) => Some(podman::InspectKind::Network),
+        Selection::Secret(_) => Some(podman::InspectKind::Secret),
         Selection::Compose(_) | Selection::Machine(_) | Selection::Connection(_) => None,
     }
 }
@@ -1026,6 +1216,7 @@ impl Render for PodmanDesktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.rebuild_filter();
         self.viewport_width = f32::from(window.bounds().size.width);
+        self.viewport_height = f32::from(window.bounds().size.height);
         if !self.initial_focus_done {
             self.initial_focus_done = true;
             window.focus(&self.root_focus);

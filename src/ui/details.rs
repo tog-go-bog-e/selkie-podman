@@ -185,6 +185,15 @@ impl PodmanDesktop {
                 panel = panel.child(self.network_summary(cx));
                 panel.child(self.network_action_bar(network, cx))
             }
+            Selection::Secret(id) => {
+                let secret = self.snapshot.secrets.iter().find(|item| &item.id == id);
+                let title = secret.map(|item| item.name.as_str()).unwrap_or("Secret");
+
+                let mut panel =
+                    shell.child(self.details_header(title, id, self.raw_toggle(selection, cx), cx));
+                panel = panel.child(self.secret_summary(secret));
+                panel.child(self.secret_action_bar(secret, cx))
+            }
             Selection::Machine(name) => {
                 let machine = self.local.machines.iter().find(|item| &item.name == name);
                 let title = machine.map(|item| item.name.as_str()).unwrap_or("Machine");
@@ -354,6 +363,16 @@ impl PodmanDesktop {
                     item.map(|item| item.subnet_label())
                         .unwrap_or_else(|| "-".to_string()),
                 )
+            }
+            Selection::Secret(id) => {
+                let name = self
+                    .snapshot
+                    .secrets
+                    .iter()
+                    .find(|item| &item.id == id)
+                    .map(|item| item.name.clone())
+                    .unwrap_or_else(|| "Secret".to_string());
+                (name, id.clone())
             }
             Selection::Compose(_) | Selection::Machine(_) | Selection::Connection(_) => {
                 (String::new(), String::new())
@@ -1355,6 +1374,88 @@ impl PodmanDesktop {
         }
 
         content
+    }
+
+    /// Everything here comes from the list: the secret's data is never read.
+    fn secret_summary(&self, secret: Option<&Secret>) -> impl IntoElement {
+        let mut content = div()
+            .id("secret-summary")
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3();
+
+        let Some(secret) = secret else {
+            return content.child(muted_text("This secret no longer exists."));
+        };
+        let engine = podman::connection().unwrap_or_else(|| "default".to_string());
+
+        content = content
+            .child(section_title("DETAILS"))
+            .child(detail_row("Name", or_dash(&secret.name)))
+            .child(detail_row("ID", or_dash(&secret.id)))
+            .child(detail_row("Driver", or_dash(&secret.driver)))
+            .child(detail_row("Created", or_dash(&secret.created)))
+            .child(detail_row("Updated", or_dash(&secret.updated)))
+            .child(detail_row("Engine", &engine))
+            .child(detail_row("Engine type", "podman"))
+            .child(section_title("LABELS"));
+
+        if secret.labels.is_empty() {
+            content = content.child(muted_text("No labels"));
+        } else {
+            for (key, value) in &secret.labels {
+                content = content.child(detail_row(key, or_dash(value)));
+            }
+        }
+        content
+    }
+
+    fn secret_action_bar(&self, secret: Option<&Secret>, cx: &mut Context<Self>) -> Div {
+        let bar = div()
+            .flex_shrink_0()
+            .border_t_1()
+            .border_color(rgb(theme().border))
+            .p_3()
+            .flex()
+            .items_center()
+            .gap_2();
+
+        if let Some(label) = &self.busy {
+            return bar.child(
+                div()
+                    .text_xs()
+                    .text_color(rgb(theme().accent))
+                    .child(label.clone()),
+            );
+        }
+
+        let Some(secret) = secret else {
+            return bar;
+        };
+        let id = secret.id.clone();
+        let name = secret.name.clone();
+
+        bar.child(pill_button(
+            "secret-delete",
+            "Delete",
+            true,
+            theme().red,
+            theme().red_bg,
+            cx.listener(move |this, _, window, cx| {
+                this.open_modal(
+                    Modal::DeleteSecret {
+                        id: id.clone(),
+                        name: name.clone(),
+                    },
+                    window,
+                    cx,
+                )
+            }),
+        ))
     }
 
     fn network_summary(&self, cx: &mut Context<Self>) -> impl IntoElement {

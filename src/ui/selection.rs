@@ -171,6 +171,20 @@ impl PodmanDesktop {
         cx.notify();
     }
 
+    pub(super) fn select_secret(&mut self, id: String, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        self.reset_raw();
+        self.stop_logs();
+        self.logs.clear();
+        self.logs_error = None;
+        self.selection = Some(Selection::Secret(id));
+        self.details_tab = DetailsTab::Summary;
+        // Everything the summary shows comes from the list; only the JSON view
+        // runs `podman secret inspect`.
+        self.details = DetailsState::None;
+        cx.notify();
+    }
+
     pub(super) fn clear_selection(&mut self) {
         self.context_menu = None;
         self.reset_raw();

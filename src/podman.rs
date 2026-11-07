@@ -17,7 +17,8 @@ use serde::Deserialize;
 
 // Each module covers one area of the CLI. Everything is re-exported here, so
 // callers keep using `podman::…`; the modules share these imports and each
-// other's items through `use super::*`.
+// other's items through `use super::*`. The general-purpose helpers live in
+// `crate::util`.
 mod compose;
 mod containers;
 mod exec;
@@ -25,9 +26,10 @@ mod images;
 mod machines;
 mod registry;
 mod resources;
+mod secrets;
 mod system;
-mod util;
 
+pub use crate::util::*;
 pub use compose::*;
 pub use containers::*;
 pub use exec::*;
@@ -35,8 +37,8 @@ pub use images::*;
 pub use machines::*;
 pub use registry::*;
 pub use resources::*;
+pub use secrets::*;
 pub use system::*;
-pub use util::*;
 
 #[cfg(test)]
 mod tests;

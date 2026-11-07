@@ -207,6 +207,13 @@ impl PodmanDesktop {
                         "Networks",
                         Some(self.snapshot.networks.len()),
                         cx,
+                    ))
+                    .child(self.nav_item(
+                        Tab::Secrets,
+                        "nav-secrets",
+                        "Secrets",
+                        Some(self.snapshot.secrets.len()),
+                        cx,
                     )),
             )
             .child(

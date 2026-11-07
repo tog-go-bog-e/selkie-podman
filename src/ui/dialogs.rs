@@ -545,6 +545,58 @@ impl PodmanDesktop {
                     ));
                 }
             }
+            Selection::Secret(id) => {
+                if let Some(secret) = self
+                    .snapshot
+                    .secrets
+                    .iter()
+                    .find(|item| &item.id == id)
+                    .cloned()
+                {
+                    let delete_id = secret.id.clone();
+                    let delete_name = secret.name.clone();
+                    items = items.child(menu_item(
+                        "ctx-secret-delete",
+                        "Delete…",
+                        !busy,
+                        true,
+                        cx.listener(move |this, _, window, cx| {
+                            this.close_context_menu(cx);
+                            this.open_modal(
+                                Modal::DeleteSecret {
+                                    id: delete_id.clone(),
+                                    name: delete_name.clone(),
+                                },
+                                window,
+                                cx,
+                            );
+                        }),
+                    ));
+
+                    let copy_name = secret.name.clone();
+                    items = items.child(menu_item(
+                        "ctx-secret-copy-name",
+                        "Copy name",
+                        true,
+                        false,
+                        cx.listener(move |this, _, _, cx| {
+                            this.close_context_menu(cx);
+                            this.copy_text(copy_name.clone(), "secret name", cx);
+                        }),
+                    ));
+                    let copy_id = secret.id.clone();
+                    items = items.child(menu_item(
+                        "ctx-secret-copy-id",
+                        "Copy ID",
+                        true,
+                        false,
+                        cx.listener(move |this, _, _, cx| {
+                            this.close_context_menu(cx);
+                            this.copy_text(copy_id.clone(), "secret ID", cx);
+                        }),
+                    ));
+                }
+            }
             Selection::Compose(name) => {
                 let project = self
                     .snapshot
@@ -852,8 +904,15 @@ impl PodmanDesktop {
             return div();
         };
 
+        // The build dialog has its own layout: platform cards, a key/value
+        // argument table and collapsible advanced fields.
+        if let Modal::BuildImage { form } = modal {
+            return self.build_modal_overlay(form, cx);
+        }
+
         let masked_password = match modal {
             Modal::RegistryLogin { password, .. } => "•".repeat(password.chars().count()),
+            Modal::CreateSecret { data, .. } => "•".repeat(data.chars().count()),
             _ => String::new(),
         };
         let (title, body, inputs, confirm, danger): ModalSpec = match modal {
@@ -886,6 +945,15 @@ impl PodmanDesktop {
                 "Delete pod?",
                 Some(format!(
                     "Pod “{name}” and its containers will be force-removed. This cannot be undone."
+                )),
+                Vec::new(),
+                "Delete",
+                true,
+            ),
+            Modal::DeleteSecret { name, .. } => (
+                "Delete secret?",
+                Some(format!(
+                    "Secret “{name}” will be removed. This cannot be undone."
                 )),
                 Vec::new(),
                 "Delete",
@@ -942,60 +1010,14 @@ impl PodmanDesktop {
                 "Tag",
                 false,
             ),
-            Modal::BuildImage {
-                containerfile,
-                tag,
-                context,
-                platform,
-                args,
-                ..
-            } => (
-                "Build image",
-                Some(
-                    "Runs `podman build`. Optional fields can be left empty; the context defaults to the Containerfile's directory."
-                        .to_string(),
-                ),
-                vec![
-                    (
-                        "Containerfile",
-                        containerfile.as_str(),
-                        "Containerfile or /path/to/Containerfile",
-                        true,
-                    ),
-                    (
-                        "Image tag",
-                        tag.as_str(),
-                        "e.g. localhost/my-app:latest",
-                        true,
-                    ),
-                    (
-                        "Build context",
-                        context.as_str(),
-                        "empty = Containerfile directory",
-                        false,
-                    ),
-                    (
-                        "Platform",
-                        platform.as_str(),
-                        "empty = engine default (e.g. linux/amd64)",
-                        false,
-                    ),
-                    (
-                        "Build args",
-                        args.as_str(),
-                        "KEY=value KEY2=value2",
-                        false,
-                    ),
-                ],
-                "Build",
-                false,
-            ),
+            Modal::BuildImage { .. } => unreachable!("rendered by build_modal_overlay"),
             Modal::RunContainer {
                 image,
                 name,
                 ports,
                 env,
                 volumes,
+                secrets,
                 command,
                 ..
             } => (
@@ -1026,6 +1048,12 @@ impl PodmanDesktop {
                         "Volumes",
                         volumes.as_str(),
                         "host:/container or volume:/container",
+                        false,
+                    ),
+                    (
+                        "Secrets",
+                        secrets.as_str(),
+                        "name, name:/path (file) or name:VAR (env)",
                         false,
                     ),
                     (
@@ -1086,6 +1114,19 @@ impl PodmanDesktop {
                     false,
                 )],
                 "Log out",
+                false,
+            ),
+            Modal::CreateSecret { name, .. } => (
+                "Create secret",
+                Some(
+                    "Runs `podman secret create`. The data is sent to Podman on stdin and is never shown again."
+                        .to_string(),
+                ),
+                vec![
+                    ("Name", name.as_str(), "e.g. db-password", true),
+                    ("Data", masked_password.as_str(), "secret data", true),
+                ],
+                "Create",
                 false,
             ),
             Modal::CreateVolume { name, driver, .. } => (
@@ -1233,10 +1274,10 @@ impl PodmanDesktop {
         };
 
         let focused = match modal {
-            Modal::BuildImage { field, .. } => field.index(),
             Modal::RunContainer { field, .. } => field.index(),
             Modal::RegistryLogin { field, .. } => field.index(),
             Modal::CreateVolume { field, .. } => field.index(),
+            Modal::CreateSecret { field, .. } => field.index(),
             Modal::CreateNetwork { field, .. } => field.index(),
             Modal::CreatePod { field, .. } => field.index(),
             Modal::CreateMachine { field, .. } => field.index(),
@@ -1244,8 +1285,7 @@ impl PodmanDesktop {
         };
         let streaming = matches!(
             modal,
-            Modal::BuildImage { .. }
-                | Modal::PushImage { .. }
+            Modal::PushImage { .. }
                 | Modal::RegistryLogin { .. }
                 | Modal::PlayKube { .. }
                 | Modal::CreateMachine { .. }
@@ -1334,9 +1374,6 @@ impl PodmanDesktop {
                             cx.listener(move |this, _, window, _cx| {
                                 this.modal_focus.focus(window);
                                 match &mut this.modal {
-                                    Some(Modal::BuildImage { field, .. }) => {
-                                        *field = BuildField::from_index(index);
-                                    }
                                     Some(Modal::RunContainer { field, .. }) => {
                                         *field = RunField::from_index(index);
                                     }
@@ -1345,6 +1382,9 @@ impl PodmanDesktop {
                                     }
                                     Some(Modal::CreateVolume { field, .. }) => {
                                         *field = VolumeField::from_index(index);
+                                    }
+                                    Some(Modal::CreateSecret { field, .. }) => {
+                                        *field = SecretField::from_index(index);
                                     }
                                     Some(Modal::CreateNetwork { field, .. }) => {
                                         *field = NetworkField::from_index(index);
@@ -1400,4 +1440,576 @@ impl PodmanDesktop {
             .justify_center()
             .child(dialog)
     }
+
+    /// The build dialog, laid out like upstream Podman Desktop: a wide form
+    /// with key/value build-argument rows, selectable platform cards and an
+    /// expandable advanced section.
+    fn build_modal_overlay(&self, form: &BuildForm, cx: &mut Context<Self>) -> Div {
+        let enabled = self.busy.is_none()
+            && self.output_run.is_none()
+            && !form.containerfile.trim().is_empty()
+            && !form.tag.trim().is_empty();
+
+        // Keep the form inside the window so the buttons stay reachable on small
+        // screens; the fields scroll when they do not fit.
+        let body_max = (self.viewport_height - 110.0).clamp(180.0, 680.0);
+
+        let mut body = div()
+            .id("build-form")
+            .flex()
+            .flex_col()
+            .max_h(px(body_max))
+            .mt_4()
+            .pr_2()
+            .overflow_y_scroll();
+
+        body = body
+            .child(field_label("Containerfile path"))
+            .child(form_input(
+                "build-containerfile",
+                &form.containerfile,
+                "Containerfile to build",
+                form.field == BuildField::Containerfile,
+                self.caret_on,
+                cx.listener(|this, _, window, _| {
+                    this.modal_focus.focus(window);
+                    if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                        form.field = BuildField::Containerfile;
+                    }
+                }),
+            ))
+            .child(field_label("Image name"))
+            .child(form_input(
+                "build-tag",
+                &form.tag,
+                "Image name (e.g. quay.io/namespace/my-custom-image)",
+                form.field == BuildField::Tag,
+                self.caret_on,
+                cx.listener(|this, _, window, _| {
+                    this.modal_focus.focus(window);
+                    if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                        form.field = BuildField::Tag;
+                    }
+                }),
+            ));
+
+        if form.show_options {
+            body = body
+                .child(field_label("Build context directory"))
+                .child(form_input(
+                    "build-context",
+                    &form.context,
+                    "Directory to build in",
+                    form.field == BuildField::Context,
+                    self.caret_on,
+                    cx.listener(|this, _, window, _| {
+                        this.modal_focus.focus(window);
+                        if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                            form.field = BuildField::Context;
+                        }
+                    }),
+                ));
+
+            body = body.child(field_label("Build arguments"));
+            for (index, arg) in form.args.iter().enumerate() {
+                body = body.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .mt_2()
+                        .child(div().flex_1().child(form_input(
+                            SharedString::from(format!("build-arg-key-{index}")),
+                            &arg.key,
+                            "Key",
+                            form.field == BuildField::ArgKey(index),
+                            self.caret_on,
+                            cx.listener(move |this, _, window, _| {
+                                this.modal_focus.focus(window);
+                                if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                                    form.field = BuildField::ArgKey(index);
+                                }
+                            }),
+                        )))
+                        .child(div().flex_1().child(form_input(
+                            SharedString::from(format!("build-arg-value-{index}")),
+                            &arg.value,
+                            "Value",
+                            form.field == BuildField::ArgValue(index),
+                            self.caret_on,
+                            cx.listener(move |this, _, window, _| {
+                                this.modal_focus.focus(window);
+                                if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                                    form.field = BuildField::ArgValue(index);
+                                }
+                            }),
+                        )))
+                        .child(circle_button(
+                            SharedString::from(format!("build-arg-remove-{index}")),
+                            "−",
+                            form.args.len() > 1,
+                            cx.listener(move |this, _, window, _| {
+                                if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                                    if form.args.len() > 1 {
+                                        form.args.remove(index);
+                                        form.field = match form.field {
+                                            BuildField::ArgKey(row) | BuildField::ArgValue(row)
+                                                if row == index =>
+                                            {
+                                                BuildField::Tag
+                                            }
+                                            BuildField::ArgKey(row) if row > index => {
+                                                BuildField::ArgKey(row - 1)
+                                            }
+                                            BuildField::ArgValue(row) if row > index => {
+                                                BuildField::ArgValue(row - 1)
+                                            }
+                                            other => other,
+                                        };
+                                    }
+                                }
+                                this.modal_focus.focus(window);
+                            }),
+                        ))
+                        .child(circle_button(
+                            SharedString::from(format!("build-arg-add-{index}")),
+                            "+",
+                            true,
+                            cx.listener(move |this, _, window, _| {
+                                if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                                    form.args.insert(index + 1, BuildArg::default());
+                                    form.field = BuildField::ArgKey(index + 1);
+                                }
+                                this.modal_focus.focus(window);
+                            }),
+                        )),
+                );
+            }
+
+            body = body.child(field_label("Platform"));
+            let mut cards: Vec<AnyElement> = Vec::new();
+            let default_platform = default_platform();
+            for preset in &BUILD_PLATFORMS {
+                let platform = preset.platform;
+                cards.push(platform_card(
+                    SharedString::from(format!("build-platform-{}", preset.arch)),
+                    preset.description,
+                    preset.arch,
+                    preset.platform == default_platform,
+                    form.selected(preset.platform),
+                    cx.listener(move |this, _, window, _| {
+                        if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                            form.toggle_platform(platform);
+                        }
+                        this.modal_focus.focus(window);
+                    }),
+                ));
+            }
+            for platform in &form.custom_platforms {
+                let value = platform.clone();
+                cards.push(platform_card(
+                    SharedString::from(format!("build-platform-{platform}")),
+                    platform,
+                    &platform_arch(platform),
+                    false,
+                    form.selected(platform),
+                    cx.listener(move |this, _, window, _| {
+                        if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                            form.toggle_platform(&value);
+                        }
+                        this.modal_focus.focus(window);
+                    }),
+                ));
+            }
+
+            if form.new_platform_open {
+                let active = form.field == BuildField::NewPlatform;
+                cards.push(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(190.))
+                        .p_3()
+                        .rounded_md()
+                        .bg(rgb(theme().bg))
+                        .border_1()
+                        .border_color(rgb(if active {
+                            theme().accent
+                        } else {
+                            theme().border
+                        }))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(rgb(theme().faint))
+                                .child("New platform"),
+                        )
+                        .child(form_input(
+                            "build-new-platform",
+                            &form.new_platform,
+                            "e.g. linux/riscv64",
+                            active,
+                            self.caret_on,
+                            cx.listener(|this, _, window, _| {
+                                this.modal_focus.focus(window);
+                                if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                                    form.field = BuildField::NewPlatform;
+                                }
+                            }),
+                        ))
+                        .child(
+                            div()
+                                .mt_2()
+                                .text_xs()
+                                .text_color(rgb(theme().faint))
+                                .child("Enter to add"),
+                        )
+                        .into_any_element(),
+                );
+            } else {
+                cards.push(
+                    div()
+                        .id("build-new-platform")
+                        .flex_shrink_0()
+                        .w(px(190.))
+                        .h(px(92.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(rgb(theme().border))
+                        .bg(rgb(theme().bg))
+                        .cursor_pointer()
+                        .hover(|style| style.border_color(rgb(theme().accent)))
+                        .on_click(cx.listener(|this, _, window, _| {
+                            this.modal_focus.focus(window);
+                            if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                                form.new_platform_open = true;
+                                form.field = BuildField::NewPlatform;
+                            }
+                        }))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(theme().accent))
+                                .child("+ New platform"),
+                        )
+                        .into_any_element(),
+                );
+            }
+
+            let mut grid = div().flex().flex_col();
+            let mut cards = cards.into_iter();
+            loop {
+                let mut row = div().flex().gap_2().mt_2();
+                let mut any = false;
+                for _ in 0..3 {
+                    if let Some(card) = cards.next() {
+                        row = row.child(card);
+                        any = true;
+                    }
+                }
+                if !any {
+                    break;
+                }
+                grid = grid.child(row);
+            }
+            body = body.child(grid);
+
+            body = body.child(field_label("Registry Validation")).child(
+                div()
+                    .id("build-validate-registries")
+                    .mt_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                            form.validate_registries = !form.validate_registries;
+                        }
+                        cx.notify();
+                    }))
+                    .child(checkbox(form.validate_registries))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(theme().text))
+                            .child("Validate registries before building"),
+                    ),
+            );
+        }
+
+        body = body.child(
+            div()
+                .id("build-more-options")
+                .mt_3()
+                .flex()
+                .items_center()
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(Modal::BuildImage { form }) = &mut this.modal {
+                        form.show_options = !form.show_options;
+                        if !form.show_options {
+                            form.new_platform_open = false;
+                            form.field = BuildField::Tag;
+                        }
+                    }
+                    cx.notify();
+                }))
+                .child(div().text_sm().text_color(rgb(theme().muted)).child(
+                    if form.show_options {
+                        "Less options…"
+                    } else {
+                        "More options…"
+                    },
+                )),
+        );
+
+        let dialog = div()
+            .track_focus(&self.modal_focus)
+            .on_key_down(cx.listener(Self::modal_key))
+            .w(px(660.))
+            .flex()
+            .flex_col()
+            .p_5()
+            .rounded_lg()
+            .bg(rgb(theme().panel_bg))
+            .border_1()
+            .border_color(rgb(theme().border))
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Build image from Containerfile"),
+            )
+            .child(div().mt_1().text_sm().text_color(rgb(theme().muted)).child(
+                "Runs `podman build`; the context defaults to the Containerfile's directory.",
+            ))
+            .child(body)
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .mt_5()
+                    .child(pill_button(
+                        "modal-cancel",
+                        "Cancel",
+                        true,
+                        theme().muted,
+                        theme().hover_bg,
+                        cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
+                    ))
+                    .child(pill_button(
+                        "modal-confirm",
+                        "Build",
+                        enabled,
+                        theme().accent,
+                        theme().accent_soft,
+                        cx.listener(|this, _, window, cx| this.confirm_modal(window, cx)),
+                    )),
+            );
+
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .w_full()
+            .h_full()
+            .occlude()
+            .bg(rgba(theme().scrim))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(dialog)
+    }
+}
+
+fn field_label(text: &'static str) -> Div {
+    div()
+        .mt_3()
+        .text_xs()
+        .text_color(rgb(theme().faint))
+        .child(text)
+}
+
+/// Text input used by the build dialog.
+fn form_input(
+    id: impl Into<SharedString>,
+    value: &str,
+    placeholder: &str,
+    active: bool,
+    caret_on: bool,
+    on_mouse_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let (display, color) = if value.is_empty() {
+        (placeholder.to_string(), theme().faint)
+    } else {
+        (value.to_string(), theme().text)
+    };
+    // The caret sits before a placeholder (empty value) and after the text
+    // otherwise, matching how the field appends characters.
+    let mut text_row = div().flex().items_center().gap_1();
+    if active && value.is_empty() {
+        text_row = text_row.child(caret(caret_on));
+    }
+    text_row = text_row.child(div().text_sm().text_color(rgb(color)).child(display));
+    if active && !value.is_empty() {
+        text_row = text_row.child(caret(caret_on));
+    }
+
+    div()
+        .id(id.into())
+        .mt_1()
+        .px_3()
+        .py_2()
+        .rounded_md()
+        .bg(rgb(theme().bg))
+        .border_1()
+        .border_color(rgb(if active {
+            theme().accent
+        } else {
+            theme().border
+        }))
+        .on_mouse_down(MouseButton::Left, on_mouse_down)
+        .child(text_row)
+        .into_any_element()
+}
+
+fn checkbox(checked: bool) -> Div {
+    div()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(16.))
+        .h(px(16.))
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(if checked {
+            theme().accent
+        } else {
+            theme().faint
+        }))
+        .when(checked, |el| el.bg(rgb(theme().accent)))
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme().on_accent))
+                .child(if checked { "✓" } else { "" }),
+        )
+}
+
+fn platform_chip(label: &str) -> Div {
+    div()
+        .px_2()
+        .py(px(1.))
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(theme().border))
+        .bg(rgb(theme().hover_bg))
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme().muted))
+                .child(label.to_string()),
+        )
+}
+
+fn platform_card(
+    id: impl Into<SharedString>,
+    description: &str,
+    arch: &str,
+    default: bool,
+    selected: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id.into())
+        .flex_shrink_0()
+        .w(px(190.))
+        .h(px(92.))
+        .p_3()
+        .rounded_md()
+        .bg(rgb(theme().bg))
+        .border_1()
+        .border_color(rgb(if selected {
+            theme().accent
+        } else {
+            theme().border
+        }))
+        .cursor_pointer()
+        .hover(|style| style.border_color(rgb(theme().accent)))
+        .on_click(on_click)
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap_2()
+                .child(checkbox(selected))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_sm()
+                        .text_color(rgb(theme().text))
+                        .whitespace_normal()
+                        .child(description.to_string()),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .mt_2()
+                .child(platform_chip(arch))
+                .when(default, |el| el.child(platform_chip("Default"))),
+        )
+        .into_any_element()
+}
+
+fn circle_button(
+    id: impl Into<SharedString>,
+    glyph: &'static str,
+    enabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .id(id.into())
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(26.))
+        .h(px(26.))
+        .rounded_full()
+        .when(enabled, |el| {
+            el.bg(rgb(theme().accent_soft))
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(theme().hover_bg)))
+                .on_click(on_click)
+        })
+        .child(
+            div()
+                .text_sm()
+                .text_color(rgb(if enabled {
+                    theme().accent
+                } else {
+                    theme().faint
+                }))
+                .child(glyph),
+        )
+        .into_any_element()
+}
+
+/// `linux/riscv64` → `RISCV64`; used for the chip on custom platform cards.
+fn platform_arch(platform: &str) -> String {
+    platform
+        .split('/')
+        .nth(1)
+        .unwrap_or(platform)
+        .to_uppercase()
 }

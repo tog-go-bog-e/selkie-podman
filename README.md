@@ -16,7 +16,7 @@ Current scope: **manage containers and images on the local Podman engine**.
   socket and graph root). Counts follow live updates; the slower `podman info`
   data is cached and re-read on entry, on Refresh or at most every 30 s.
 - **Containers**: list, search, inspect summary, **run from an image** (name,
-  ports, environment, volumes and command override), start / stop / restart /
+  ports, environment, volumes, secrets and command override), start / stop / restart /
   pause / resume / rename / delete, streaming logs (configurable window,
   auto-follow, **Load older**, clear and copy), a **Stats** tab with live CPU,
   memory and network graphs, and an **interactive terminal** (`podman exec` +
@@ -34,9 +34,14 @@ Current scope: **manage containers and images on the local Podman engine**.
   project and service.
 - **Images**: list, search, inspect summary, **run**, pull (with streamed
   progress), **push**, tag, delete, and **build** from a Containerfile with
-  streamed output. The build dialog accepts an optional context directory,
-  `--platform` and whitespace-separated `KEY=VALUE` build args; the context
-  defaults to the Containerfile's directory. Image details add a **History** tab
+  streamed output. The build dialog mirrors upstream Podman Desktop: the
+  Containerfile path and image name are always visible, **More options** adds the
+  build context, a **Key/Value** build-argument table and selectable platform
+  cards (amd64, arm64, ppc64le, s390x, wasi, plus **New platform** for any other
+  `os/arch`), passed as a comma-separated `--platform`. **Validate registries
+  before building** checks that the registries its `FROM` lines pull from are
+  public or have credentials in Podman's auth files. The context defaults to the
+  Containerfile's directory. Image details add a **History** tab
   (`podman history`: layer ID, size, timestamp, created-by and comment) and a
   **Files** tab that browses the image filesystem by directory, previews text
   files, reports binary files and shows symlink targets.
@@ -52,6 +57,13 @@ Current scope: **manage containers and images on the local Podman engine**.
 - **Networks**: list, search, inspect summary (subnets, connected containers),
   **create** (name, optional driver / subnet / gateway), **prune unused**
   (confirmed), delete.
+- **Secrets**: list (name, ID, driver, created, updated), search (including
+  labels), a summary with the engine and labels, **create** (name + data; the
+  data is masked in the dialog, sent to `podman secret create` on stdin and never
+  read back), delete (confirmed), and the raw `podman secret inspect` JSON. The
+  Run dialog's **Secrets** field maps them into a container: `name` mounts it at
+  `/run/secrets/name`, `name:/path` mounts it at a path and `name:VAR` exposes it
+  as an environment variable.
 - **Machines**: list Podman machines (state, driver, CPUs, memory, disk, last up),
   **create** them (`podman machine init` with optional name, CPUs, memory and
   disk size, streamed into the output panel), **Start** / **Stop** (stop asks for
@@ -67,7 +79,7 @@ Current scope: **manage containers and images on the local Podman engine**.
   command, mounts and environment from `podman inspect`; separate Summary, Logs,
   Stats and Terminal tabs for containers, and a Terminal tab for running
   machines (SSH). A **JSON** button switches any
-  inspectable resource (containers, images, pods, volumes, networks) to its raw,
+  inspectable resource (containers, images, pods, volumes, networks, secrets) to its raw,
   pretty-printed `inspect` output, with Copy.
 - **Resizable panels**: drag the divider next to the sidebar or the details pane;
   both widths persist across restarts and are clamped so the list keeps a usable
@@ -86,14 +98,15 @@ Current scope: **manage containers and images on the local Podman engine**.
 - **Search**: case-insensitive filtering by name, image, ID, state or status.
 - **Row actions**: hover a row for Start / Stop / Pause / Restart / Delete
   (containers), Start / Stop / Restart / Delete (pods), Tag / Delete (images),
-  Delete (volumes and networks), Up / Down (compose projects), Start / Stop /
+  Delete (volumes, networks and secrets), Up / Down (compose projects), Start / Stop /
   Delete (machines) or Use (connections); right-click for a context menu with the
   same actions plus Pause / Resume / Rename (containers), Terminal (SSH) and
   Delete (machines) and Copy ID/name/mountpoint/URI.
 - **Keyboard**: `j`/`k` or arrows navigate, `Enter` opens the first row when
   nothing is selected, `/` focuses search, `Esc` closes menus/details or clears
   search, `Ctrl/Cmd+R` refreshes and `Ctrl/Cmd+Q` quits. In dialogs, `Enter`
-  confirms and `Esc` cancels.
+  confirms and `Esc` cancels (in the build dialog's “New platform” field,
+  `Enter` adds the platform).
 - **Themes and settings**: dark, light and high-contrast themes; theme, active
   tab, refresh interval, log window and window size all persist across restarts.
   **Settings** is split into `Registries`, `Appearance`, `Engine` and `About`,
@@ -305,22 +318,25 @@ the **Connections** tab to make this app talk to the VM.
   list or logs. `podman logout <registry>` (or `--all` when the field is empty)
   removes the stored credentials. Loopback registries (`localhost`, `127.0.0.1`,
   `[::1]`) automatically get `--tls-verify=false`, matching local dev registries.
-- Runs use `podman run -d` with optional `--name`, repeated `-p`/`-e`/`-v` and a
-  command appended after the image. Name, port mappings (`host:container[/proto]`),
+- Runs use `podman run -d` with optional `--name`, repeated `-p`/`-e`/`-v`/`--secret`
+  and a command appended after the image. Secret mappings must name an existing
+  secret. Name, port mappings (`host:container[/proto]`),
   environment entries (`KEY=VALUE`) and mounts (`source:destination[:options]`)
   are validated; space-separated lists are split without shell quoting, while
   the command accepts shell-style `'…'`/`"…"` quoting and `\` escapes. The
   container is left detached so it appears in the list and can be opened in the
   Terminal tab.
 - Builds run `podman build -f <Containerfile> -t <tag>`, followed by
-  `--platform <platform>` and one `--build-arg KEY=VALUE` per entry when given,
-  then the build context. The context defaults to the Containerfile's directory
-  and must be an existing directory when supplied. Paths are validated and the
-  Containerfile must exist locally; stdout/stderr stream into the shared output
-  panel (Clear/Close, success/failure toast, image list refresh). Pulls use the
-  same panel, so `podman pull` progress and errors are visible instead of being
-  hidden behind a spinner. Only one build, compose action or pull can run at a
-  time.
+  `--platform <platform>[,<platform>…]` and one `--build-arg KEY=VALUE` per
+  filled-in argument row, then the build context. The context defaults to the
+  Containerfile's directory and must be an existing directory when supplied.
+  Paths are validated and the Containerfile must exist locally; when registry
+  validation is on, the registries in its `FROM` lines must be public or
+  authenticated before the build starts. stdout/stderr stream into the shared
+  output panel (Clear/Close, success/failure toast, image list refresh). Pulls
+  use the same panel, so `podman pull` progress and errors are visible instead
+  of being hidden behind a spinner. Only one build, compose action or pull can
+  run at a time.
 - Machines and connections are read from local Podman configuration
   (`podman machine list`, `podman system connection list`) as a separate
   `LocalState`, so they stay visible even when the selected engine is
@@ -461,10 +477,12 @@ prioritized next milestones and verification checklist.
   run or attach mode. Restart policies, resource limits, networks, user and
   privileged options are not exposed yet.
 - Builds default to the Containerfile's directory as context and accept an
-  optional context, `--platform` and whitespace-separated `--build-arg` entries.
-  There is no cache control, target selection or secrets support yet. The
-  Containerfile and any explicit context must exist on the machine running the
-  app.
+  optional context, multiple `--platform` values and per-row `--build-arg`
+  entries. Registry validation only checks the registries named in `FROM` lines
+  against Podman's auth files and a list of public registries; it does not probe
+  the registries. There is no cache control, target selection or secrets support
+  yet. The Containerfile and any explicit context must exist on the machine
+  running the app.
 - Remote engines must already be configured in Podman (SSH keys/agent, socket
   path). Compose against a remote connection depends on the compose provider.
   Switching a connection is local to this app and never runs

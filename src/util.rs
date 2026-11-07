@@ -1,8 +1,8 @@
 //! Shared parsing, formatting and name-validation helpers.
 
-use super::*;
+use serde::Deserialize;
 
-pub(super) fn validate_name<'a>(value: &'a str, what: &str) -> Result<&'a str, String> {
+pub(crate) fn validate_name<'a>(value: &'a str, what: &str) -> Result<&'a str, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(format!("{what} name cannot be empty"));
@@ -21,7 +21,7 @@ pub(super) fn validate_name<'a>(value: &'a str, what: &str) -> Result<&'a str, S
     Ok(value)
 }
 
-pub(super) fn display_created(raw: &str) -> String {
+pub(crate) fn display_created(raw: &str) -> String {
     if raw.is_empty() {
         "-".to_string()
     } else {
@@ -29,7 +29,7 @@ pub(super) fn display_created(raw: &str) -> String {
     }
 }
 
-pub(super) fn parse_json<T: for<'de> Deserialize<'de>>(
+pub(crate) fn parse_json<T: for<'de> Deserialize<'de>>(
     json: &str,
     command: &str,
 ) -> Result<Vec<T>, String> {
@@ -41,18 +41,18 @@ pub(super) fn parse_json<T: for<'de> Deserialize<'de>>(
         .map_err(|err| format!("could not parse `{command}` output: {err}"))
 }
 
-pub(super) fn first_non_empty(values: Option<&[String]>) -> Option<String> {
+pub(crate) fn first_non_empty(values: Option<&[String]>) -> Option<String> {
     values?
         .iter()
         .find(|value| !value.trim().is_empty())
         .cloned()
 }
 
-pub(super) fn short_id(id: &str) -> String {
+pub(crate) fn short_id(id: &str) -> String {
     id.chars().take(12).collect()
 }
 
-pub(super) fn format_timestamp(raw: Option<&str>) -> String {
+pub(crate) fn format_timestamp(raw: Option<&str>) -> String {
     match raw {
         None => "-".to_string(),
         Some(raw) if raw.len() >= 16 => raw[..16].replace('T', " "),
@@ -76,7 +76,7 @@ pub fn human_size(bytes: u64) -> String {
 }
 
 /// Parse values such as `1.712MB`, `556.2kB`, `16.38GB` or `0B`.
-pub(super) fn parse_size(value: &str) -> u64 {
+pub(crate) fn parse_size(value: &str) -> u64 {
     let value = value.trim();
     let split = value
         .find(|character: char| {
@@ -108,7 +108,7 @@ pub(super) fn parse_size(value: &str) -> u64 {
 /// Podman reports some numeric fields as JSON strings on some versions
 /// (`"Memory": "2147483648"`, `"DiskSize": "107374182400"`) and as numbers on
 /// others, so accept both.
-pub(super) fn lenient_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+pub(crate) fn lenient_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

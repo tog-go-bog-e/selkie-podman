@@ -93,6 +93,17 @@ impl PodmanDesktop {
                     _ => text(&item.name),
                 }
             }
+            Tab::Secrets => {
+                let item = &self.snapshot.secrets[index];
+                match column {
+                    1 => text(&item.driver),
+                    // RFC 3339 sorts chronologically as text.
+                    2 => text(&item.created_at),
+                    3 => text(&item.updated),
+                    4 => text(&item.id),
+                    _ => text(&item.name),
+                }
+            }
             Tab::Networks => {
                 let item = &self.snapshot.networks[index];
                 match column {

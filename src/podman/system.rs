@@ -11,6 +11,7 @@ pub struct Snapshot {
     pub pods: Vec<Pod>,
     pub volumes: Vec<Volume>,
     pub networks: Vec<Network>,
+    pub secrets: Vec<Secret>,
     pub compose: Vec<ComposeProject>,
 }
 
@@ -23,6 +24,9 @@ pub fn snapshot() -> Result<Snapshot, String> {
     let volumes_raw = query(&["volume", "ls", "--format", "json"])?;
     let networks_raw = query(&["network", "ls", "--format", "json"])?;
 
+    // Secrets need Podman 3.1+; an engine without them still gets a snapshot.
+    let secrets = secret_list().unwrap_or_default();
+
     let containers = parse_containers(&containers_raw)?;
     let compose = compose_projects(&containers);
 
@@ -33,6 +37,7 @@ pub fn snapshot() -> Result<Snapshot, String> {
         pods: parse_pods(&pods_raw)?,
         volumes: parse_volumes(&volumes_raw)?,
         networks: parse_networks(&networks_raw)?,
+        secrets,
         compose,
     })
 }

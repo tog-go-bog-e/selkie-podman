@@ -147,6 +147,7 @@ impl PodmanDesktop {
             Selection::Network(name) => {
                 !self.snapshot.networks.iter().any(|item| &item.name == name)
             }
+            Selection::Secret(id) => !self.snapshot.secrets.iter().any(|item| &item.id == id),
             Selection::Machine(name) => !self.local.machines.iter().any(|item| &item.name == name),
             Selection::Connection(name) => {
                 !self.local.connections.iter().any(|item| &item.name == name)

@@ -120,12 +120,12 @@ fn builds_build_commands() {
         .collect();
     assert_eq!(args, ["build", "-f", "Containerfile", "-t", "app", "."]);
 
-    // Context, platform and build args are passed through in order.
+    // Context, platforms and build args are passed through in order.
     let command = build_command(&BuildOptions {
         containerfile: "Containerfile".to_string(),
         tag: "app".to_string(),
         context: Some("/tmp".to_string()),
-        platform: Some("linux/arm64".to_string()),
+        platforms: vec!["linux/amd64".to_string(), "linux/arm64".to_string()],
         args: vec!["A=1".to_string(), "B".to_string()],
     })
     .expect("full build command");
@@ -142,7 +142,7 @@ fn builds_build_commands() {
             "-t",
             "app",
             "--platform",
-            "linux/arm64",
+            "linux/amd64,linux/arm64",
             "--build-arg",
             "A=1",
             "--build-arg",
@@ -161,10 +161,79 @@ fn builds_build_commands() {
     assert!(build_command(&BuildOptions {
         containerfile: "Containerfile".to_string(),
         tag: "app".to_string(),
+        platforms: vec!["amd64".to_string()],
+        ..Default::default()
+    })
+    .is_err());
+    assert!(build_command(&BuildOptions {
+        containerfile: "Containerfile".to_string(),
+        tag: "app".to_string(),
         context: Some("/definitely/not/here".to_string()),
         ..Default::default()
     })
     .is_err());
+}
+
+#[test]
+fn combines_build_arg_rows() {
+    let rows = vec![
+        ("A".to_string(), "1".to_string()),
+        ("B".to_string(), String::new()),
+        (" ".to_string(), " ".to_string()),
+    ];
+    assert_eq!(
+        build_args_from_rows(&rows),
+        Ok(vec!["A=1".to_string(), "B".to_string()])
+    );
+
+    let value_only = vec![(String::new(), "1".to_string())];
+    assert!(build_args_from_rows(&value_only).is_err());
+
+    let invalid = vec![("-A".to_string(), "1".to_string())];
+    assert!(build_args_from_rows(&invalid).is_err());
+}
+
+#[test]
+fn finds_containerfile_registries() {
+    let contents = "\
+        # syntax=docker/dockerfile:1\n\
+        FROM --platform=$BUILDPLATFORM golang:1.23 AS build\n\
+        FROM quay.io/fedora/fedora:40 AS runtime\n\
+        FROM ${BASE_IMAGE}\n\
+        FROM scratch\n\
+        FROM build\n\
+        FROM localhost/app\n\
+        FROM registry.example.com:5000/team/app@sha256:abc\n\
+        FROM quay.io/fedora/fedora:41\n";
+    assert_eq!(
+        containerfile_registries(contents),
+        vec![
+            "docker.io".to_string(),
+            "quay.io".to_string(),
+            "localhost".to_string(),
+            "registry.example.com:5000".to_string(),
+        ]
+    );
+    assert!(containerfile_registries("FROM scratch\n").is_empty());
+}
+
+#[test]
+fn flags_registries_without_credentials() {
+    let registries = vec![
+        "docker.io".to_string(),
+        "quay.io".to_string(),
+        "registry.example.com".to_string(),
+    ];
+    let accounts = vec![Account {
+        registry: "registry.example.com".to_string(),
+        username: "me".to_string(),
+        kind: AccountKind::Password,
+    }];
+    assert!(registries_without_credentials(&registries, &accounts).is_empty());
+    assert_eq!(
+        registries_without_credentials(&registries, &[]),
+        vec!["registry.example.com".to_string()]
+    );
 }
 
 #[test]
@@ -175,15 +244,6 @@ fn validates_platforms_and_build_args() {
     assert!(validate_platform("amd64").is_err());
     assert!(validate_platform("-x/y").is_err());
     assert!(validate_platform("linux/am d64").is_err());
-
-    assert_eq!(
-        parse_build_args("A=1 B=two"),
-        Ok(vec!["A=1".to_string(), "B=two".to_string()])
-    );
-    assert_eq!(parse_build_args("  "), Ok(Vec::new()));
-    assert!(parse_build_args("=1").is_err());
-    assert!(parse_build_args("A=1 --flag").is_err());
-    assert!(parse_build_args("bad key=1").is_ok());
 }
 
 #[test]
@@ -194,6 +254,7 @@ fn builds_run_commands() {
         ports: vec!["8080:80".to_string(), "127.0.0.1:5432:5432/tcp".to_string()],
         env: vec!["A=1".to_string(), "B".to_string()],
         volumes: vec!["/tmp/demo:/data".to_string(), "named:/var/lib".to_string()],
+        secrets: Vec::new(),
         command: vec!["sleep".to_string(), "60".to_string()],
     };
     let command = container_run_command(&options).expect("run command");
@@ -1392,4 +1453,167 @@ fn bounded_read_stops_at_the_limit() {
     let (bytes, truncated) = read_bounded(&mut &b"short"[..], 8).expect("read");
     assert_eq!(bytes, b"short");
     assert!(!truncated);
+}
+
+#[test]
+fn parses_secret_inspect_output() {
+    // Captured from `podman secret inspect` (Podman 5.4).
+    let json = r#"[
+        {
+            "ID": "b8f6fa7fb1afea817cad6a3e3",
+            "CreatedAt": "2026-11-07T11:49:23.468846269Z",
+            "UpdatedAt": "2026-11-07T11:50:01.000000000Z",
+            "Spec": {
+                "Name": "db-password",
+                "Driver": {"Name": "file", "Options": {"path": "/tmp/filedriver"}},
+                "Labels": {"purpose": "probe", "app": "web"}
+            }
+        },
+        {
+            "ID": "0000aaaa1111bbbb2222cccc3",
+            "CreatedAt": "2026-11-06T08:00:00Z",
+            "UpdatedAt": "2026-11-06T08:00:00Z",
+            "Spec": {"Name": "api-token", "Driver": {"Name": "file"}, "Labels": null}
+        }
+    ]"#;
+    let secrets = parse_secrets(json).expect("secrets should parse");
+    // Sorted by name.
+    assert_eq!(secrets[0].name, "api-token");
+    assert!(secrets[0].labels.is_empty());
+
+    let secret = &secrets[1];
+    assert_eq!(secret.id, "b8f6fa7fb1afea817cad6a3e3");
+    assert_eq!(secret.name, "db-password");
+    assert_eq!(secret.driver, "file");
+    assert_eq!(secret.created, "2026-11-07 11:49");
+    assert_eq!(secret.updated, "2026-11-07 11:50");
+    assert_eq!(secret.created_at, "2026-11-07T11:49:23.468846269Z");
+    assert_eq!(
+        secret.labels.iter().collect::<Vec<_>>(),
+        vec![
+            (&"app".to_string(), &"web".to_string()),
+            (&"purpose".to_string(), &"probe".to_string())
+        ]
+    );
+
+    assert!(parse_secrets("").unwrap().is_empty());
+    let bare = parse_secrets(r#"[{"ID": "abc"}]"#).expect("bare secret");
+    assert_eq!(bare[0].name, "abc");
+    assert_eq!(bare[0].driver, "-");
+    assert_eq!(bare[0].created, "-");
+}
+
+#[test]
+fn builds_secret_commands() {
+    let command = secret_create_command("db-password").expect("create command");
+    assert_eq!(
+        args_of(command),
+        vec!["secret", "create", "db-password", "-"]
+    );
+    assert!(secret_create_command("").is_err());
+    assert!(secret_create_command("-x").is_err());
+    assert!(secret_create_command("has space").is_err());
+    assert!(secret_create_command(&"a".repeat(254)).is_err());
+    assert!(create_secret("ok", "").is_err());
+    assert_eq!(
+        InspectKind::Secret.args("abc"),
+        ["secret", "inspect", "abc"]
+    );
+}
+
+#[test]
+fn parses_secret_mappings() {
+    assert_eq!(
+        parse_secret_mappings("token  db:/etc/db/password api:API_KEY").unwrap(),
+        vec![
+            "token".to_string(),
+            "db,type=mount,target=/etc/db/password".to_string(),
+            "api,type=env,target=API_KEY".to_string(),
+        ]
+    );
+    assert!(parse_secret_mappings("").unwrap().is_empty());
+    assert!(parse_secret_mappings("db:").is_err());
+    assert!(parse_secret_mappings("-db").is_err());
+    assert!(parse_secret_mappings("db:1VAR").is_err());
+    assert!(parse_secret_mappings("db:BAD-VAR").is_err());
+    assert!(parse_secret_mappings("db:/a,b").is_err());
+    assert_eq!(
+        secret_mapping_names("token db:/x api:KEY"),
+        vec!["token", "db", "api"]
+    );
+}
+
+#[test]
+fn run_command_passes_secrets() {
+    let options = RunOptions {
+        image: "alpine".to_string(),
+        secrets: parse_secret_mappings("db:/run/db api:API_KEY").unwrap(),
+        ..Default::default()
+    };
+    let args = args_of(container_run_command(&options).expect("run command"));
+    assert_eq!(
+        args,
+        vec![
+            "run",
+            "-d",
+            "--secret",
+            "db,type=mount,target=/run/db",
+            "--secret",
+            "api,type=env,target=API_KEY",
+            "alpine",
+        ]
+    );
+    let bad = RunOptions {
+        image: "alpine".to_string(),
+        secrets: vec!["--privileged".to_string()],
+        ..Default::default()
+    };
+    assert!(container_run_command(&bad).is_err());
+}
+
+/// End-to-end against a live engine: `cargo test -- --ignored secrets_round_trip`.
+/// Needs Podman and a local `alpine` image; cleans up after itself.
+#[test]
+#[ignore]
+fn secrets_round_trip() {
+    let name = format!("pdrs-test-{}", std::process::id());
+    let data = "s3cr3t value with spaces";
+    create_secret(&name, data).expect("create secret");
+
+    let cleanup = |container: Option<&str>| {
+        if let Some(container) = container {
+            let _ = run(&["rm", "-f", container]);
+        }
+        let _ = run(&["secret", "rm", &name]);
+    };
+
+    let listed = secret_list().expect("list secrets");
+    let Some(secret) = listed.iter().find(|secret| secret.name == name) else {
+        cleanup(None);
+        panic!("created secret is not listed: {listed:?}");
+    };
+    assert_eq!(secret.driver, "file");
+    assert_ne!(secret.created, "-");
+
+    let options = RunOptions {
+        image: "alpine".to_string(),
+        secrets: parse_secret_mappings(&format!("{name}:/run/custom {name}:API_KEY")).unwrap(),
+        command: parse_command_args(r#"sh -c 'cat /run/custom; echo; printf %s "$API_KEY"'"#)
+            .unwrap(),
+        ..Default::default()
+    };
+    let container = run_container(&options).expect("run container");
+    let container = container.trim().to_string();
+    let _ = run(&["wait", &container]);
+    let logs = run(&["logs", &container]).unwrap_or_default();
+    cleanup(Some(&container));
+
+    assert_eq!(logs, format!("{data}\n{data}"));
+    assert!(
+        !secret_list()
+            .unwrap()
+            .iter()
+            .any(|secret| secret.name == name),
+        "secret was not removed"
+    );
 }

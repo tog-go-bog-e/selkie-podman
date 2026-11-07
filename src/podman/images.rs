@@ -478,8 +478,9 @@ pub struct BuildOptions {
     pub tag: String,
     /// Empty/None uses the Containerfile's directory.
     pub context: Option<String>,
-    /// Empty/None uses the engine default.
-    pub platform: Option<String>,
+    /// Target platforms, passed to Podman comma-separated. Empty uses the
+    /// engine default.
+    pub platforms: Vec<String>,
     /// Already parsed `KEY=VALUE` (or `KEY`) tokens.
     pub args: Vec<String>,
 }
@@ -502,13 +503,9 @@ pub fn build_command(options: &BuildOptions) -> Result<Command, String> {
         Some(context) => validate_build_context(context)?.to_string(),
         None => default_build_context(containerfile),
     };
-    let platform = options
-        .platform
-        .as_deref()
-        .map(str::trim)
-        .filter(|platform| !platform.is_empty());
-    if let Some(platform) = platform {
-        validate_platform(platform)?;
+    let mut platforms = Vec::new();
+    for platform in &options.platforms {
+        platforms.push(validate_platform(platform)?.to_string());
     }
     for arg in &options.args {
         validate_build_arg(arg)?;
@@ -516,8 +513,8 @@ pub fn build_command(options: &BuildOptions) -> Result<Command, String> {
 
     let mut command = base_command();
     command.args(["build", "-f", containerfile, "-t", tag]);
-    if let Some(platform) = platform {
-        command.args(["--platform", platform]);
+    if !platforms.is_empty() {
+        command.args(["--platform", &platforms.join(",")]);
     }
     for arg in &options.args {
         command.args(["--build-arg", arg]);
@@ -566,14 +563,151 @@ pub fn validate_platform(value: &str) -> Result<&str, String> {
     Ok(value)
 }
 
-/// Split whitespace-separated `KEY=VALUE` build args and validate each token.
-pub fn parse_build_args(value: &str) -> Result<Vec<String>, String> {
+/// Combine the dialog's key/value rows into `KEY=VALUE` build args.
+///
+/// Rows with neither a key nor a value are ignored (the dialog always shows
+/// one empty row), and a value without a key is rejected.
+pub fn build_args_from_rows(rows: &[(String, String)]) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
-    for token in value.split_whitespace() {
-        validate_build_arg(token)?;
-        args.push(token.to_string());
+    for (key, value) in rows {
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() {
+            if value.is_empty() {
+                continue;
+            }
+            return Err("build argument value without a key".to_string());
+        }
+        let token = if value.is_empty() {
+            key.to_string()
+        } else {
+            format!("{key}={value}")
+        };
+        validate_build_arg(&token)?;
+        args.push(token);
     }
     Ok(args)
+}
+
+/// Registries whose public catalogue can be pulled from without credentials.
+const PUBLIC_REGISTRIES: [&str; 11] = [
+    "docker.io",
+    "index.docker.io",
+    "registry-1.docker.io",
+    "quay.io",
+    "ghcr.io",
+    "registry.gitlab.com",
+    "mcr.microsoft.com",
+    "gcr.io",
+    "registry.k8s.io",
+    "registry.access.redhat.com",
+    "registry.fedoraproject.org",
+];
+
+/// Registry hosts referenced by a Containerfile's `FROM` instructions, in
+/// first-seen order. Unqualified images (`alpine:3.20`) belong to Docker Hub;
+/// `scratch`, build-stage aliases and `FROM ${ARG}` placeholders are skipped.
+pub fn containerfile_registries(contents: &str) -> Vec<String> {
+    let mut registries: Vec<String> = Vec::new();
+    let mut stages: Vec<String> = Vec::new();
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut tokens = line.split_whitespace();
+        let Some(instruction) = tokens.next() else {
+            continue;
+        };
+        if !instruction.eq_ignore_ascii_case("from") {
+            continue;
+        }
+        // `FROM --platform=$BUILDPLATFORM golang AS build`
+        let mut rest = tokens.filter(|token| !token.starts_with("--"));
+        let Some(image) = rest.next() else {
+            continue;
+        };
+        let alias = rest
+            .next()
+            .filter(|token| token.eq_ignore_ascii_case("as"))
+            .and_then(|_| rest.next());
+
+        if image.eq_ignore_ascii_case("scratch") || image.contains('$') {
+            continue;
+        }
+        // `FROM build` refers to an earlier stage, not a registry.
+        if stages.iter().any(|stage| stage.eq_ignore_ascii_case(image)) {
+            continue;
+        }
+        if let Some(alias) = alias {
+            stages.push(alias.to_string());
+        }
+
+        let image = image.split('@').next().unwrap_or(image);
+        let registry = match image.split_once('/') {
+            Some((host, _))
+                if host.contains('.')
+                    || host.contains(':')
+                    || host.eq_ignore_ascii_case("localhost") =>
+            {
+                host
+            }
+            _ => "docker.io",
+        };
+        if !registries
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(registry))
+        {
+            registries.push(registry.to_string());
+        }
+    }
+
+    registries
+}
+
+/// Check that every registry the Containerfile pulls from is either public or
+/// has credentials in Podman's auth files.
+///
+/// Called before a build when “Validate registries before building” is
+/// enabled, so a missing login fails immediately instead of midway through a
+/// pull inside `podman build`.
+pub fn validate_build_registries(containerfile: &str) -> Result<(), String> {
+    let contents = std::fs::read_to_string(containerfile)
+        .map_err(|error| format!("could not read {containerfile}: {error}"))?;
+    let registries = containerfile_registries(&contents);
+    if registries.is_empty() {
+        return Ok(());
+    }
+
+    let accounts = accounts()?;
+    let missing = registries_without_credentials(&registries, &accounts);
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "not logged in to {}; log in under Accounts, or clear “Validate registries before building”",
+        missing.join(", ")
+    ))
+}
+
+/// Registries a build needs credentials for: neither known-public nor present
+/// in Podman's auth files.
+pub(super) fn registries_without_credentials(
+    registries: &[String],
+    accounts: &[Account],
+) -> Vec<String> {
+    registries
+        .iter()
+        .filter(|registry| !PUBLIC_REGISTRIES.contains(&registry.as_str()))
+        .filter(|registry| {
+            !accounts
+                .iter()
+                .any(|account| &account.registry == *registry)
+        })
+        .cloned()
+        .collect()
 }
 
 pub(super) fn validate_build_arg(token: &str) -> Result<(), String> {

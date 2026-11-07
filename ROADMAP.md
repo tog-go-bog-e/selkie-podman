@@ -151,12 +151,19 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 
 ### Done (Milestone C — Build images)
 
-- [x] "Build image" in the Images toolbar opens a two-field modal (Containerfile,
-      image tag); Tab switches fields, Enter builds, Esc cancels
+- [x] "Build image" in the Images toolbar opens a dialog with Containerfile
+      path and image name; **More options** adds the context directory, a
+      key/value build-argument table, platform cards (amd64, arm64, ppc64le,
+      s390x, wasi, new platforms) and registry validation. Tab switches fields,
+      Enter builds, Esc cancels
 - [x] Validation: tag checked with the image-reference rules, Containerfile must
       exist locally (missing path/field shows a toast and keeps the modal open)
-- [x] Runs `podman build -f <Containerfile> -t <tag> <context>` with the
-      Containerfile's directory as context
+- [x] Runs `podman build -f <Containerfile> -t <tag> --platform <a,b>
+      --build-arg <key=value> <context>` with the Containerfile's directory as
+      the default context
+- [x] Before building, optionally checks that the registries in the
+      Containerfile's `FROM` lines are public or have credentials in Podman's
+      auth files
 - [x] Output streams into the shared output panel (stdout + stderr, ANSI
       stripped, 2000-line cap, auto-scroll, Clear/Close, running/finished state)
 - [x] Success/failure toast, image list refresh on completion, and compose/build
@@ -699,6 +706,9 @@ usefulness for a local-engine app:
 6. Dashboard (resource counts and host stats) — done (2026-11-06)
 7. Image history and image file browser — done (2026-11-06)
 8. Packaging and desktop integration — done (2026-11-06)
+9. Podman secrets (list, create, delete, details/inspect, run mappings) — done
+   (2026-11-07). Upstream added the Secrets page on 2026-07-08
+   (`packages/renderer/src/lib/secrets/`); the 2026-11-06 capture missed it.
 
 The parity backlog is now empty.
 

@@ -215,6 +215,8 @@ pub struct RunOptions {
     pub env: Vec<String>,
     /// `source:destination[:options]` mounts.
     pub volumes: Vec<String>,
+    /// `--secret` values, as produced by [`parse_secret_mappings`].
+    pub secrets: Vec<String>,
     /// Command and arguments appended after the image.
     pub command: Vec<String>,
 }
@@ -239,6 +241,11 @@ pub fn container_run_command(options: &RunOptions) -> Result<Command, String> {
     for mount in &options.volumes {
         validate_volume_mount(mount)?;
     }
+    for secret in &options.secrets {
+        if secret.is_empty() || secret.starts_with('-') {
+            return Err(format!("invalid secret mapping: {secret}"));
+        }
+    }
 
     let mut command = base_command();
     // The app is a container manager, so a run should leave a container behind
@@ -255,6 +262,9 @@ pub fn container_run_command(options: &RunOptions) -> Result<Command, String> {
     }
     for mount in &options.volumes {
         command.args(["-v", mount]);
+    }
+    for secret in &options.secrets {
+        command.args(["--secret", secret]);
     }
     command.arg(image);
     command.args(&options.command);

@@ -14,6 +14,7 @@ impl PodmanDesktop {
             Tab::Pods => "Pods",
             Tab::Volumes => "Volumes",
             Tab::Networks => "Networks",
+            Tab::Secrets => "Secrets",
             Tab::Machines => "Machines",
             Tab::Connections => "Connections",
             Tab::Accounts => "Accounts",
@@ -77,6 +78,7 @@ impl PodmanDesktop {
             Tab::Pods => "Search pods…",
             Tab::Volumes => "Search volumes…",
             Tab::Networks => "Search networks…",
+            Tab::Secrets => "Search secrets…",
             Tab::Machines => "Search machines…",
             Tab::Connections => "Search connections…",
             Tab::Accounts | Tab::Settings => "Search…",
@@ -177,6 +179,7 @@ impl PodmanDesktop {
             Tab::Pods => self.snapshot.pods.len(),
             Tab::Volumes => self.snapshot.volumes.len(),
             Tab::Networks => self.snapshot.networks.len(),
+            Tab::Secrets => self.snapshot.secrets.len(),
             Tab::Machines => self.local.machines.len(),
             Tab::Connections => self.local.connections.len(),
             Tab::Accounts => self.accounts.len(),
@@ -215,12 +218,7 @@ impl PodmanDesktop {
                             cx.listener(|this, _, window, cx| {
                                 this.open_modal(
                                     Modal::BuildImage {
-                                        containerfile: String::new(),
-                                        tag: String::new(),
-                                        context: String::new(),
-                                        platform: String::new(),
-                                        args: String::new(),
-                                        field: BuildField::Containerfile,
+                                        form: BuildForm::default(),
                                     },
                                     window,
                                     cx,
@@ -326,6 +324,18 @@ impl PodmanDesktop {
                             theme().hover_bg,
                             cx.listener(|this, _, window, cx| {
                                 this.open_modal(Modal::PruneVolumes, window, cx)
+                            }),
+                        ))
+                    })
+                    .when(self.tab == Tab::Secrets, |el| {
+                        el.child(pill_button(
+                            "create-secret",
+                            "Create secret",
+                            !busy,
+                            theme().accent,
+                            theme().accent_soft,
+                            cx.listener(|this, _, window, cx| {
+                                this.open_modal(Modal::create_secret(), window, cx)
                             }),
                         ))
                     })
@@ -456,6 +466,14 @@ impl PodmanDesktop {
                 .child(self.sortable_header("NAME", 0, None, cx))
                 .child(self.sortable_header("DRIVER", 1, Some(100.), cx))
                 .child(self.sortable_header("SUBNET", 2, Some(170.), cx)),
+            (Tab::Secrets, false) => header
+                .child(self.sortable_header("NAME", 0, None, cx))
+                .child(self.sortable_header("DRIVER", 1, Some(100.), cx))
+                .child(self.sortable_header("CREATED", 2, Some(150.), cx))
+                .child(self.sortable_header("UPDATED", 3, Some(150.), cx)),
+            (Tab::Secrets, true) => header
+                .child(self.sortable_header("NAME", 0, None, cx))
+                .child(self.sortable_header("CREATED", 2, Some(150.), cx)),
             (Tab::Machines, false) => header
                 .child(self.sortable_header("NAME", 0, None, cx))
                 .child(self.sortable_header("STATE", 1, Some(110.), cx))
@@ -587,6 +605,12 @@ impl PodmanDesktop {
                     Tab::Networks => (
                         "No networks",
                         "Create a network with the button above and it will show up here."
+                            .to_string(),
+                        "Retry",
+                    ),
+                    Tab::Secrets => (
+                        "No secrets",
+                        "Create one with the button above, or from a terminal: printf \"secretdata\" | podman secret create mysecret -"
                             .to_string(),
                         "Retry",
                     ),

@@ -122,6 +122,23 @@ impl PodmanDesktop {
                 })
                 .map(|(index, _)| index)
                 .collect(),
+            Tab::Secrets => self
+                .snapshot
+                .secrets
+                .iter()
+                .enumerate()
+                .filter(|(_, secret)| {
+                    let labels: Vec<String> = secret
+                        .labels
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect();
+                    let mut fields: Vec<&String> = vec![&secret.name, &secret.id, &secret.driver];
+                    fields.extend(labels.iter());
+                    matches_query(query, &fields)
+                })
+                .map(|(index, _)| index)
+                .collect(),
             Tab::Machines => self
                 .local
                 .machines

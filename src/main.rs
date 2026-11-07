@@ -2,6 +2,7 @@ mod desktop;
 mod podman;
 mod terminal;
 mod ui;
+mod util;
 
 use std::time::Duration;
 
@@ -46,7 +47,7 @@ fn main() {
                     // window with podman-desktop-rs.desktop (StartupWMClass).
                     app_id: Some("podman-desktop-rs".into()),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Podman Desktop - Rust".into()),
+                        title: Some("Podman Desktop - Rust Edition".into()),
                         ..Default::default()
                     }),
                     window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),

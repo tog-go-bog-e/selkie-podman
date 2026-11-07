@@ -42,20 +42,13 @@ impl PodmanDesktop {
                     return;
                 }
             }
-            Modal::BuildImage {
-                containerfile,
-                tag,
-                context,
-                platform,
-                args,
-                ..
-            } => {
-                if let Err(error) = podman::validate_image_reference(tag) {
+            Modal::BuildImage { form } => {
+                if let Err(error) = podman::validate_image_reference(&form.tag) {
                     self.toast(ToastKind::Error, error, cx);
                     self.modal_focus.focus(window);
                     return;
                 }
-                let containerfile = containerfile.trim();
+                let containerfile = form.containerfile.trim();
                 if !std::path::Path::new(containerfile).is_file() {
                     self.toast(
                         ToastKind::Error,
@@ -65,24 +58,31 @@ impl PodmanDesktop {
                     self.modal_focus.focus(window);
                     return;
                 }
-                if !context.trim().is_empty() {
-                    if let Err(error) = podman::validate_build_context(context) {
+                if !form.context.trim().is_empty() {
+                    if let Err(error) = podman::validate_build_context(&form.context) {
                         self.toast(ToastKind::Error, error, cx);
                         self.modal_focus.focus(window);
                         return;
                     }
                 }
-                if !platform.trim().is_empty() {
+                for platform in &form.platforms {
                     if let Err(error) = podman::validate_platform(platform) {
                         self.toast(ToastKind::Error, error, cx);
                         self.modal_focus.focus(window);
                         return;
                     }
                 }
-                if let Err(error) = podman::parse_build_args(args) {
+                if let Err(error) = form.arg_tokens() {
                     self.toast(ToastKind::Error, error, cx);
                     self.modal_focus.focus(window);
                     return;
+                }
+                if form.validate_registries {
+                    if let Err(error) = podman::validate_build_registries(containerfile) {
+                        self.toast(ToastKind::Error, error, cx);
+                        self.modal_focus.focus(window);
+                        return;
+                    }
                 }
             }
             Modal::RunContainer {
@@ -90,6 +90,7 @@ impl PodmanDesktop {
                 ports,
                 env,
                 volumes,
+                secrets,
                 command,
                 ..
             } => {
@@ -105,12 +106,30 @@ impl PodmanDesktop {
                     podman::parse_env_vars(env).map(|_| ()),
                     podman::parse_volume_mounts(volumes).map(|_| ()),
                     podman::parse_command_args(command).map(|_| ()),
+                    podman::parse_secret_mappings(secrets).map(|_| ()),
                 ] {
                     if let Err(error) = result {
                         self.toast(ToastKind::Error, error, cx);
                         self.modal_focus.focus(window);
                         return;
                     }
+                }
+                // Upstream only offers existing secrets; check the names here so
+                // a typo fails before Podman pulls the image.
+                if let Some(missing) =
+                    podman::secret_mapping_names(secrets)
+                        .into_iter()
+                        .find(|name| {
+                            !self
+                                .snapshot
+                                .secrets
+                                .iter()
+                                .any(|secret| secret.name == *name)
+                        })
+                {
+                    self.toast(ToastKind::Error, format!("no secret named {missing}"), cx);
+                    self.modal_focus.focus(window);
+                    return;
                 }
             }
             Modal::PushImage { image, destination } => {
@@ -154,6 +173,18 @@ impl PodmanDesktop {
                         self.modal_focus.focus(window);
                         return;
                     }
+                }
+            }
+            Modal::CreateSecret { name, data, .. } => {
+                if let Err(error) = podman::validate_secret_name(name) {
+                    self.toast(ToastKind::Error, error, cx);
+                    self.modal_focus.focus(window);
+                    return;
+                }
+                if data.is_empty() {
+                    self.toast(ToastKind::Error, "secret data cannot be empty", cx);
+                    self.modal_focus.focus(window);
+                    return;
                 }
             }
             Modal::CreateVolume { name, driver, .. } => {
@@ -284,6 +315,17 @@ impl PodmanDesktop {
                     cx,
                 );
             }
+            Modal::DeleteSecret { id, name } => {
+                let label = format!("Deleting secret {name}…");
+                let success = format!("Deleted secret {name}");
+                self.run_task(
+                    label,
+                    success,
+                    AfterAction::Deselect,
+                    move || podman::remove_secret(&id),
+                    cx,
+                );
+            }
             Modal::DeleteVolume { name } => {
                 let label = format!("Deleting volume {name}…");
                 let success = format!("Deleted volume {name}");
@@ -312,48 +354,17 @@ impl PodmanDesktop {
             Modal::StopMachine { name } => {
                 self.machine_action(name, MachineAction::Stop, cx);
             }
-            Modal::BuildImage {
-                containerfile,
-                tag,
-                context,
-                platform,
-                args,
-                ..
-            } => {
+            Modal::BuildImage { form } => {
                 let options = podman::BuildOptions {
-                    containerfile: containerfile.trim().to_string(),
-                    tag: tag.trim().to_string(),
-                    context: Some(context.trim().to_string()).filter(|value| !value.is_empty()),
-                    platform: Some(platform.trim().to_string()).filter(|value| !value.is_empty()),
-                    args: podman::parse_build_args(&args).unwrap_or_default(),
+                    containerfile: form.containerfile.trim().to_string(),
+                    tag: form.tag.trim().to_string(),
+                    context: Some(form.context.trim().to_string())
+                        .filter(|value| !value.is_empty()),
+                    platforms: form.platforms.clone(),
+                    args: form.arg_tokens().unwrap_or_default(),
                 };
                 match podman::build_command(&options) {
-                    Ok(command) => {
-                        let mut line = format!(
-                            "$ podman build -f {} -t {}",
-                            options.containerfile, options.tag
-                        );
-                        if let Some(platform) = &options.platform {
-                            line.push_str(&format!(" --platform {platform}"));
-                        }
-                        for arg in &options.args {
-                            line.push_str(&format!(" --build-arg {arg}"));
-                        }
-                        if let Some(context) = &options.context {
-                            line.push_str(&format!(" {context}"));
-                        }
-                        self.start_output(
-                            OutputSpec {
-                                title: format!("build · {}", options.tag),
-                                command_line: line,
-                                success: format!("Built {}", options.tag),
-                                failure: format!("Build failed for {}", options.tag),
-                            },
-                            command,
-                            None,
-                            cx,
-                        );
-                    }
+                    Ok(command) => self.start_build(options, command, cx),
                     Err(error) => self.toast(ToastKind::Error, error, cx),
                 }
             }
@@ -363,6 +374,7 @@ impl PodmanDesktop {
                 ports,
                 env,
                 volumes,
+                secrets,
                 command,
                 ..
             } => {
@@ -372,6 +384,7 @@ impl PodmanDesktop {
                     ports: podman::parse_ports(&ports).unwrap_or_default(),
                     env: podman::parse_env_vars(&env).unwrap_or_default(),
                     volumes: podman::parse_volume_mounts(&volumes).unwrap_or_default(),
+                    secrets: podman::parse_secret_mappings(&secrets).unwrap_or_default(),
                     command: podman::parse_command_args(&command).unwrap_or_default(),
                 };
                 match podman::container_run_command(&options) {
@@ -475,6 +488,17 @@ impl PodmanDesktop {
                     success,
                     AfterAction::Refresh,
                     move || podman::tag_image(&id, &target),
+                    cx,
+                );
+            }
+            Modal::CreateSecret { name, data, .. } => {
+                let name = name.trim().to_string();
+                let success = format!("Created secret {name}");
+                self.run_task(
+                    format!("Creating secret {name}…"),
+                    success,
+                    AfterAction::Refresh,
+                    move || podman::create_secret(&name, &data),
                     cx,
                 );
             }
@@ -615,34 +639,79 @@ impl PodmanDesktop {
         cx.notify();
     }
 
+    /// Start a build, showing the exact command in the output panel.
+    fn start_build(
+        &mut self,
+        options: podman::BuildOptions,
+        command: Command,
+        cx: &mut Context<Self>,
+    ) {
+        let mut line = format!(
+            "$ podman build -f {} -t {}",
+            options.containerfile, options.tag
+        );
+        if !options.platforms.is_empty() {
+            line.push_str(&format!(" --platform {}", options.platforms.join(",")));
+        }
+        for arg in &options.args {
+            line.push_str(&format!(" --build-arg {arg}"));
+        }
+        if let Some(context) = &options.context {
+            line.push_str(&format!(" {context}"));
+        }
+        self.start_output(
+            OutputSpec {
+                title: format!("build · {}", options.tag),
+                command_line: line,
+                success: format!("Built {}", options.tag),
+                failure: format!("Build failed for {}", options.tag),
+            },
+            command,
+            None,
+            cx,
+        );
+    }
+
     pub(super) fn modal_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let mut build_error: Option<String> = None;
         let outcome = match &mut self.modal {
             Some(Modal::PullImage { input })
             | Some(Modal::TagImage { input, .. })
             | Some(Modal::RenameContainer { input, .. }) => edit_text(input, event, cx),
-            Some(Modal::BuildImage {
-                field,
-                containerfile,
-                tag,
-                context,
-                platform,
-                args,
-            }) => {
+            Some(Modal::BuildImage { form }) => {
                 if event.keystroke.key.as_str() == "tab" {
-                    *field = field.next();
+                    form.field = form.next_field();
                     TextOutcome::Edited
+                } else if form.field == BuildField::NewPlatform {
+                    // Enter in the “New platform” card adds the platform instead
+                    // of submitting the whole dialog.
+                    if matches!(event.keystroke.key.as_str(), "enter" | "return") {
+                        if let Err(error) = form.add_custom_platform() {
+                            build_error = Some(error);
+                        }
+                        TextOutcome::Edited
+                    } else {
+                        edit_text(&mut form.new_platform, event, cx)
+                    }
                 } else {
-                    let target = match field {
-                        BuildField::Containerfile => containerfile,
-                        BuildField::Tag => tag,
-                        BuildField::Context => context,
-                        BuildField::Platform => platform,
-                        BuildField::Args => args,
+                    let target = match form.field {
+                        BuildField::Containerfile => &mut form.containerfile,
+                        BuildField::Tag => &mut form.tag,
+                        BuildField::Context => &mut form.context,
+                        BuildField::ArgKey(index) => match form.args.get_mut(index) {
+                            Some(arg) => &mut arg.key,
+                            None => return,
+                        },
+                        BuildField::ArgValue(index) => match form.args.get_mut(index) {
+                            Some(arg) => &mut arg.value,
+                            None => return,
+                        },
+                        BuildField::NewPlatform => &mut form.new_platform,
                     };
                     edit_text(target, event, cx)
                 }
@@ -653,6 +722,7 @@ impl PodmanDesktop {
                 ports,
                 env,
                 volumes,
+                secrets,
                 command,
                 ..
             }) => {
@@ -665,6 +735,7 @@ impl PodmanDesktop {
                         RunField::Ports => ports,
                         RunField::Env => env,
                         RunField::Volumes => volumes,
+                        RunField::Secrets => secrets,
                         RunField::Command => command,
                     };
                     edit_text(target, event, cx)
@@ -686,6 +757,18 @@ impl PodmanDesktop {
                         LoginField::Registry => registry,
                         LoginField::Username => username,
                         LoginField::Password => password,
+                    };
+                    edit_text(target, event, cx)
+                }
+            }
+            Some(Modal::CreateSecret { field, name, data }) => {
+                if event.keystroke.key.as_str() == "tab" {
+                    *field = field.next();
+                    TextOutcome::Edited
+                } else {
+                    let target = match field {
+                        SecretField::Name => name,
+                        SecretField::Data => data,
                     };
                     edit_text(target, event, cx)
                 }
@@ -766,6 +849,10 @@ impl PodmanDesktop {
             },
             None => TextOutcome::Ignored,
         };
+
+        if let Some(error) = build_error {
+            self.toast(ToastKind::Error, error, cx);
+        }
 
         match outcome {
             TextOutcome::Submit => {
