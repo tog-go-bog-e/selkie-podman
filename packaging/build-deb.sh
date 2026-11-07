@@ -36,13 +36,20 @@ OUT="dist/$NAME.deb"
 PKG=podman-desktop-rs
 DOC="$STAGE/usr/share/doc/$PKG"
 
+# The Maintainer field (and the changelog/copyright) is published inside the
+# package. Set DEB_MAINTAINER="Name <email>" to choose it explicitly; otherwise
+# the git identity is used, and the result is printed so it is never a surprise.
 MAINTAINER_NAME=$(git config --get user.name 2>/dev/null || true)
 MAINTAINER_EMAIL=$(git config --get user.email 2>/dev/null || true)
-if [ -n "$MAINTAINER_NAME" ] && [ -n "$MAINTAINER_EMAIL" ]; then
+if [ -n "${DEB_MAINTAINER:-}" ]; then
+    MAINTAINER=$DEB_MAINTAINER
+    MAINTAINER_NAME=${DEB_MAINTAINER%% <*}
+elif [ -n "$MAINTAINER_NAME" ] && [ -n "$MAINTAINER_EMAIL" ]; then
     MAINTAINER="$MAINTAINER_NAME <$MAINTAINER_EMAIL>"
 else
     MAINTAINER="$PKG maintainers <noreply@example.invalid>"
 fi
+echo "Maintainer: $MAINTAINER (override with DEB_MAINTAINER)"
 
 for size in 16 32 48 64 128 256 512; do
     if [ ! -f "packaging/icons/podman-desktop-rs-$size.png" ]; then
