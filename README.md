@@ -38,7 +38,8 @@ Current scope: **manage containers and images on the local Podman engine**.
   Containerfile path and image name are always visible, **More options** adds the
   build context, a **Key/Value** build-argument table and selectable platform
   cards (amd64, arm64, ppc64le, s390x, wasi, plus **New platform** for any other
-  `os/arch`), passed as a comma-separated `--platform`. **Validate registries
+  `os/arch`), passed as a comma-separated `--platform`; several platforms build
+  into a manifest list. **Validate registries
   before building** checks that the registries its `FROM` lines pull from are
   public or have credentials in Podman's auth files. The context defaults to the
   Containerfile's directory. Image details add a **History** tab
@@ -71,10 +72,17 @@ Current scope: **manage containers and images on the local Podman engine**.
   **SSH terminal** on a running machine in the details pane
   (`podman machine ssh`).
 - **Connections**: list configured connections (name, URI, identity, Podman
-  default) and choose which engine this app talks to. Switching uses
-  `--connection <name>` for every command and persists across restarts; **Use
-  Podman default** switches back. The user's `podman` configuration is never
-  modified.
+  default) with a reachability **STATUS**, and choose which engine this app talks
+  to. **Add connection** runs `podman system connection add` for an SSH
+  (`ssh://user@host:22/run/user/1000/podman/podman.sock`) or `unix://` endpoint,
+  with an optional identity file (`~` is expanded; keys from the SSH agent need
+  no identity). **Check all**, a row's **Check** or the details action bar probes
+  each connection with `podman --connection <name> info`; the column, details
+  pane and a toast report `reachable` / `unreachable` with Podman's error.
+  Switching uses `--connection <name>` for every command and persists across
+  restarts; **Use Podman default** switches back. Switching never modifies the
+  user's Podman configuration, and the add dialog does not pass `--default`
+  (Podman itself may mark the first connection as its default).
 - **Details pane**: image, ID, status, created, PID, exit code, networks,
   command, mounts and environment from `podman inspect`; separate Summary, Logs,
   Stats and Terminal tabs for containers, and a Terminal tab for running
@@ -326,10 +334,12 @@ the **Connections** tab to make this app talk to the VM.
   the command accepts shell-style `'…'`/`"…"` quoting and `\` escapes. The
   container is left detached so it appears in the list and can be opened in the
   Terminal tab.
-- Builds run `podman build -f <Containerfile> -t <tag>`, followed by
-  `--platform <platform>[,<platform>…]` and one `--build-arg KEY=VALUE` per
-  filled-in argument row, then the build context. The context defaults to the
-  Containerfile's directory and must be an existing directory when supplied.
+- Builds run `podman build -f <Containerfile>`, then `-t <tag>` for one platform
+  or `--manifest <tag>` for several (Podman stores those as a manifest list),
+  followed by `--platform <platform>[,<platform>…]` and one `--build-arg
+  KEY=VALUE` per filled-in argument row, then the build context. The context
+  defaults to the Containerfile's directory and must be an existing directory
+  when supplied.
   Paths are validated and the Containerfile must exist locally; when registry
   validation is on, the registries in its `FROM` lines must be public or
   authenticated before the build starts. stdout/stderr stream into the shared
@@ -342,7 +352,13 @@ the **Connections** tab to make this app talk to the VM.
   `LocalState`, so they stay visible even when the selected engine is
   unreachable. When a connection is selected, `podman::base_command()` prepends
   `--connection <name>` to every engine command (including logs and compose);
-  machine/connection commands always run locally.
+  machine and connection commands always run locally. **Add connection** builds
+  `podman system connection add [--identity FILE] NAME URI` (only `ssh://` and
+  absolute `unix://` URIs are accepted, and the identity file must exist).
+  Reachability probes run in the background, one per connection, with a 15 s
+  timeout: on the first visit to the tab, when a new connection appears and on
+  demand. Results live in memory per session; switching the engine does not
+  re-probe.
 - Updates: `src/ui/events.rs` runs a long-lived `podman events --format json`
   child (restarted after 3 s if it exits), ignores health-check/exec events,
   coalesces bursts for 300 ms and refreshes the snapshot. The refresh path
@@ -484,8 +500,11 @@ prioritized next milestones and verification checklist.
   yet. The Containerfile and any explicit context must exist on the machine
   running the app.
 - Remote engines must already be configured in Podman (SSH keys/agent, socket
-  path). Compose against a remote connection depends on the compose provider.
-  Switching a connection is local to this app and never runs
+  path), or added from the Connections tab. The add dialog covers `ssh://` and
+  `unix://` only (no `tcp://` TLS options), cannot edit/remove connections (use
+  `podman system connection remove`), and reachability results are in-memory and
+  only refreshed on demand. Compose against a remote connection depends on the
+  compose provider. Switching a connection is local to this app and never runs
   `podman system connection default`.
 - No multi-select, bulk actions or command palette yet. Sort is per tab, resets
   on tab switch, and is not persisted.

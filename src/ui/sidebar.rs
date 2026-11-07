@@ -87,6 +87,9 @@ impl PodmanDesktop {
                     if tab == Tab::Accounts {
                         this.load_accounts();
                     }
+                    if tab == Tab::Connections {
+                        this.check_connections(false, cx);
+                    }
                 }
                 cx.notify();
             }))

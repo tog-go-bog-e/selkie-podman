@@ -120,7 +120,8 @@ fn builds_build_commands() {
         .collect();
     assert_eq!(args, ["build", "-f", "Containerfile", "-t", "app", "."]);
 
-    // Context, platforms and build args are passed through in order.
+    // Context, platforms and build args are passed through in order. More than
+    // one platform stores the result as a manifest list (`--manifest`, no `-t`).
     let command = build_command(&BuildOptions {
         containerfile: "Containerfile".to_string(),
         tag: "app".to_string(),
@@ -139,7 +140,7 @@ fn builds_build_commands() {
             "build",
             "-f",
             "Containerfile",
-            "-t",
+            "--manifest",
             "app",
             "--platform",
             "linux/amd64,linux/arm64",
@@ -151,10 +152,44 @@ fn builds_build_commands() {
         ]
     );
 
+    // One platform is tagged normally and gets no manifest list.
+    let command = build_command(&BuildOptions {
+        containerfile: "Containerfile".to_string(),
+        tag: "app".to_string(),
+        platforms: vec!["linux/arm64".to_string()],
+        ..Default::default()
+    })
+    .expect("single-platform command");
+    let args: Vec<String> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [
+            "build",
+            "-f",
+            "Containerfile",
+            "-t",
+            "app",
+            "--platform",
+            "linux/arm64",
+            "."
+        ]
+    );
+
     assert!(build_command(&BuildOptions::default()).is_err());
     assert!(build_command(&BuildOptions {
         containerfile: "Containerfile".to_string(),
         tag: "bad tag".to_string(),
+        ..Default::default()
+    })
+    .is_err());
+    // A digest cannot name the manifest list of a multi-platform build.
+    assert!(build_command(&BuildOptions {
+        containerfile: "Containerfile".to_string(),
+        tag: "app@sha256:abc".to_string(),
+        platforms: vec!["linux/amd64".to_string(), "linux/arm64".to_string()],
         ..Default::default()
     })
     .is_err());
@@ -703,6 +738,68 @@ fn adds_connection_flag_only_when_selected() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
     assert_eq!(args, ["--connection", "dev-box"]);
+}
+
+#[test]
+fn builds_connection_add_commands() {
+    let command = connection_add_command(
+        " dev-box ",
+        " ssh://core@host:2222/run/user/1000/podman/podman.sock ",
+        None,
+    )
+    .expect("connection add command");
+    assert_eq!(command.get_program(), "podman");
+    let args: Vec<String> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [
+            "system",
+            "connection",
+            "add",
+            "dev-box",
+            "ssh://core@host:2222/run/user/1000/podman/podman.sock"
+        ]
+    );
+
+    // An identity file is passed before the name and URL, and must exist.
+    let identity = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+    let command =
+        connection_add_command("local", "unix:///run/podman/podman.sock", Some(&identity))
+            .expect("connection add with identity");
+    let args: Vec<String> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        args,
+        [
+            "system",
+            "connection",
+            "add",
+            "--identity",
+            identity.as_str(),
+            "local",
+            "unix:///run/podman/podman.sock"
+        ]
+    );
+
+    assert!(connection_add_command("bad name", "ssh://host/sock", None).is_err());
+    assert!(connection_add_command("dev", "tcp://host:2376", None).is_err());
+    assert!(connection_add_command("dev", "unix://run/podman/podman.sock", None).is_err());
+    assert!(connection_add_command("dev", "ssh://", None).is_err());
+    assert!(connection_add_command("dev", "", None).is_err());
+    assert!(
+        connection_add_command("dev", "ssh://host/sock", Some("/definitely/not/here")).is_err()
+    );
+
+    assert_eq!(
+        validate_connection_uri(" unix:///run/podman/podman.sock "),
+        Ok("unix:///run/podman/podman.sock")
+    );
+    assert!(probe_connection(" ").is_err());
 }
 
 #[test]

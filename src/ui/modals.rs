@@ -250,6 +250,19 @@ impl PodmanDesktop {
                     return;
                 }
             }
+            Modal::CreateConnection {
+                name,
+                uri,
+                identity,
+                ..
+            } => {
+                let identity = Some(identity.trim().to_string()).filter(|value| !value.is_empty());
+                if let Err(error) = podman::connection_add_command(name, uri, identity.as_deref()) {
+                    self.toast(ToastKind::Error, error, cx);
+                    self.modal_focus.focus(window);
+                    return;
+                }
+            }
             Modal::CreateMachine {
                 name,
                 cpus,
@@ -592,6 +605,23 @@ impl PodmanDesktop {
                     cx,
                 );
             }
+            Modal::CreateConnection {
+                name,
+                uri,
+                identity,
+                ..
+            } => {
+                let name = name.trim().to_string();
+                let uri = uri.trim().to_string();
+                let identity = Some(identity.trim().to_string()).filter(|value| !value.is_empty());
+                self.run_task(
+                    format!("Adding connection {name}…"),
+                    format!("Added connection {name}"),
+                    AfterAction::Refresh,
+                    move || podman::connection_add(&name, &uri, identity.as_deref()),
+                    cx,
+                );
+            }
             Modal::CreateMachine {
                 name,
                 cpus,
@@ -646,10 +676,12 @@ impl PodmanDesktop {
         command: Command,
         cx: &mut Context<Self>,
     ) {
-        let mut line = format!(
-            "$ podman build -f {} -t {}",
-            options.containerfile, options.tag
-        );
+        let mut line = format!("$ podman build -f {}", options.containerfile);
+        if options.platforms.len() > 1 {
+            line.push_str(&format!(" --manifest {}", options.tag));
+        } else {
+            line.push_str(&format!(" -t {}", options.tag));
+        }
         if !options.platforms.is_empty() {
             line.push_str(&format!(" --platform {}", options.platforms.join(",")));
         }
@@ -817,6 +849,24 @@ impl PodmanDesktop {
                     let target = match field {
                         PodField::Name => name,
                         PodField::Ports => ports,
+                    };
+                    edit_text(target, event, cx)
+                }
+            }
+            Some(Modal::CreateConnection {
+                field,
+                name,
+                uri,
+                identity,
+            }) => {
+                if event.keystroke.key.as_str() == "tab" {
+                    *field = field.next();
+                    TextOutcome::Edited
+                } else {
+                    let target = match field {
+                        ConnectionField::Name => name,
+                        ConnectionField::Uri => uri,
+                        ConnectionField::Identity => identity,
                     };
                     edit_text(target, event, cx)
                 }

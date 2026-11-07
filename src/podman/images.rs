@@ -507,12 +507,24 @@ pub fn build_command(options: &BuildOptions) -> Result<Command, String> {
     for platform in &options.platforms {
         platforms.push(validate_platform(platform)?.to_string());
     }
+    // Podman stores one tag for a single platform, but a manifest list (named
+    // with `--manifest`, not `-t`) when several are built at once.
+    let multi_platform = platforms.len() > 1;
+    if multi_platform && tag.contains('@') {
+        return Err("a multi-platform build needs a manifest name, not a digest".to_string());
+    }
     for arg in &options.args {
         validate_build_arg(arg)?;
     }
 
     let mut command = base_command();
-    command.args(["build", "-f", containerfile, "-t", tag]);
+    command.arg("build");
+    command.args(["-f", containerfile]);
+    if multi_platform {
+        command.args(["--manifest", tag]);
+    } else {
+        command.args(["-t", tag]);
+    }
     if !platforms.is_empty() {
         command.args(["--platform", &platforms.join(",")]);
     }

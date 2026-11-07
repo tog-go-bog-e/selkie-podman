@@ -264,6 +264,110 @@ pub fn connection_list() -> Result<Vec<Connection>, String> {
     parse_connections(&json)
 }
 
+/// How long a reachability probe may take before the connection is considered
+/// unreachable. Shorter than [`QUERY_TIMEOUT`] because several probes can run
+/// at once and the SSH handshake either works quickly or not at all.
+const CONNECTION_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Check that `podman --connection <name> info` answers. This never changes the
+/// connection the app uses.
+pub fn probe_connection(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("connection name cannot be empty".to_string());
+    }
+    let mut command = Command::new("podman");
+    command.args([
+        "--connection",
+        name,
+        "info",
+        "--format",
+        "{{.Version.Version}}",
+    ]);
+    execute_with(
+        command,
+        &format!("--connection {name} info"),
+        Some(CONNECTION_CHECK_TIMEOUT),
+    )
+    .map(|_| ())
+}
+
+/// Names for new connections: letters, digits, `-`, `_` and `.`.
+pub fn validate_connection_name(value: &str) -> Result<&str, String> {
+    validate_name(value, "connection")
+}
+
+/// Only the transports this app can hand to Podman without extra settings:
+/// SSH (`ssh://[user@]host[:port][/socket]`) and a local Unix socket.
+pub fn validate_connection_uri(value: &str) -> Result<&str, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("connection URI cannot be empty".to_string());
+    }
+    if value.starts_with('-') {
+        return Err("connection URI cannot start with '-'".to_string());
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err("connection URI cannot contain whitespace".to_string());
+    }
+    if let Some(rest) = value.strip_prefix("ssh://") {
+        if rest.is_empty() {
+            return Err("connection URI needs a host (ssh://user@host:22/path)".to_string());
+        }
+    } else if let Some(rest) = value.strip_prefix("unix://") {
+        if !rest.starts_with('/') {
+            return Err("a unix:// URI needs an absolute socket path".to_string());
+        }
+    } else {
+        return Err("connection URI must start with ssh:// or unix://".to_string());
+    }
+    Ok(value)
+}
+
+/// Build `podman system connection add` for a new connection. Connection
+/// commands are local, so the selected engine is deliberately not applied.
+pub fn connection_add_command(
+    name: &str,
+    uri: &str,
+    identity: Option<&str>,
+) -> Result<Command, String> {
+    let name = validate_connection_name(name)?;
+    let uri = validate_connection_uri(uri)?;
+    let identity = identity
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(expand_home);
+    if let Some(identity) = &identity {
+        if !std::path::Path::new(identity).is_file() {
+            return Err(format!("identity file not found: {identity}"));
+        }
+    }
+
+    let mut command = Command::new("podman");
+    command.args(["system", "connection", "add"]);
+    if let Some(identity) = &identity {
+        command.args(["--identity", identity]);
+    }
+    command.args([name, uri]);
+    Ok(command)
+}
+
+pub fn connection_add(name: &str, uri: &str, identity: Option<&str>) -> Result<String, String> {
+    let command = connection_add_command(name, uri, identity)?;
+    execute(command, &format!("system connection add {name}"))
+}
+
+/// `~` is expanded here because the command is spawned without a shell.
+fn expand_home(path: &str) -> String {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => std::path::Path::new(&home)
+            .join(rest)
+            .to_string_lossy()
+            .into_owned(),
+        _ => path.to_string(),
+    }
+}
+
 pub(super) fn parse_connections(json: &str) -> Result<Vec<Connection>, String> {
     let raw: Vec<RawConnection> = parse_json(json, "podman system connection list")?;
     Ok(raw

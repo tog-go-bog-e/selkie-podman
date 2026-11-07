@@ -373,6 +373,26 @@ impl PodmanDesktop {
                             }),
                         ))
                     })
+                    .when(self.tab == Tab::Connections, |el| {
+                        el.child(pill_button(
+                            "create-connection",
+                            "Add connection",
+                            !busy,
+                            theme().accent,
+                            theme().accent_soft,
+                            cx.listener(|this, _, window, cx| {
+                                this.open_modal(Modal::create_connection(), window, cx)
+                            }),
+                        ))
+                        .child(pill_button(
+                            "check-connections",
+                            "Check all",
+                            !busy,
+                            theme().muted,
+                            theme().hover_bg,
+                            cx.listener(|this, _, _, cx| this.check_connections(true, cx)),
+                        ))
+                    })
                     .when(
                         self.tab == Tab::Connections && self.settings.connection.is_some(),
                         |el| {
@@ -622,7 +642,7 @@ impl PodmanDesktop {
                     ),
                     Tab::Connections => (
                         "No connections",
-                        "The app is using Podman's default engine. Add one with `podman system connection add`."
+                        "The app is using Podman's default engine. Add an SSH or Unix-socket connection here, or with `podman system connection add`."
                             .to_string(),
                         "Retry",
                     ),

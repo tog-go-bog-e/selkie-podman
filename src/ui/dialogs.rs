@@ -844,6 +844,22 @@ impl PodmanDesktop {
                         ));
                     }
 
+                    let check_name = connection.name.clone();
+                    let checking = matches!(
+                        self.connection_checks.get(&connection.name),
+                        Some(ConnectionCheck::Checking)
+                    );
+                    items = items.child(menu_item(
+                        "ctx-connection-check",
+                        "Check reachability",
+                        !busy && !checking,
+                        false,
+                        cx.listener(move |this, _, _, cx| {
+                            this.close_context_menu(cx);
+                            this.check_connection(check_name.clone(), true, cx);
+                        }),
+                    ));
+
                     let uri = connection.uri.clone();
                     items = items.child(menu_item(
                         "ctx-connection-copy-uri",
@@ -1262,6 +1278,35 @@ impl PodmanDesktop {
                 "Create",
                 false,
             ),
+            Modal::CreateConnection {
+                name,
+                uri,
+                identity,
+                ..
+            } => (
+                "Add connection",
+                Some(
+                    "Runs `podman system connection add`. For SSH, use the remote Podman socket (ssh://user@host:22/run/user/1000/podman/podman.sock); credentials come from the SSH agent or the identity file."
+                        .to_string(),
+                ),
+                vec![
+                    ("Name", name.as_str(), "e.g. workstation", true),
+                    (
+                        "URI",
+                        uri.as_str(),
+                        "ssh://user@host:22/run/user/1000/podman/podman.sock",
+                        true,
+                    ),
+                    (
+                        "Identity (optional)",
+                        identity.as_str(),
+                        "~/.ssh/id_ed25519",
+                        false,
+                    ),
+                ],
+                "Add",
+                false,
+            ),
             Modal::DeleteMachine { name } => (
                 "Delete machine?",
                 Some(format!(
@@ -1281,6 +1326,7 @@ impl PodmanDesktop {
             Modal::CreateNetwork { field, .. } => field.index(),
             Modal::CreatePod { field, .. } => field.index(),
             Modal::CreateMachine { field, .. } => field.index(),
+            Modal::CreateConnection { field, .. } => field.index(),
             _ => 0,
         };
         let streaming = matches!(
@@ -1394,6 +1440,9 @@ impl PodmanDesktop {
                                     }
                                     Some(Modal::CreateMachine { field, .. }) => {
                                         *field = MachineField::from_index(index);
+                                    }
+                                    Some(Modal::CreateConnection { field, .. }) => {
+                                        *field = ConnectionField::from_index(index);
                                     }
                                     _ => {}
                                 }

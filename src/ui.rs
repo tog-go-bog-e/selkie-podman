@@ -26,7 +26,7 @@ mod terminal;
 mod theme;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Read, Write},
     process::{Command, Stdio},
     sync::mpsc::{self, TryRecvError},
@@ -101,6 +101,14 @@ enum DetailsTab {
     Logs,
     Stats,
     Terminal,
+}
+
+/// Result of probing a configured connection.
+#[derive(Clone, PartialEq, Eq)]
+enum ConnectionCheck {
+    Checking,
+    Reachable,
+    Unreachable(String),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -502,6 +510,40 @@ enum MachineField {
     Disk,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConnectionField {
+    Name,
+    Uri,
+    Identity,
+}
+
+impl ConnectionField {
+    const ALL: [ConnectionField; 3] = [
+        ConnectionField::Name,
+        ConnectionField::Uri,
+        ConnectionField::Identity,
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            ConnectionField::Name => 0,
+            ConnectionField::Uri => 1,
+            ConnectionField::Identity => 2,
+        }
+    }
+
+    fn from_index(index: usize) -> Self {
+        Self::ALL
+            .get(index)
+            .copied()
+            .unwrap_or(ConnectionField::Name)
+    }
+
+    fn next(self) -> Self {
+        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+    }
+}
+
 impl MachineField {
     const ALL: [MachineField; 4] = [
         MachineField::Name,
@@ -562,6 +604,12 @@ enum Modal {
     },
     StopMachine {
         name: String,
+    },
+    CreateConnection {
+        name: String,
+        uri: String,
+        identity: String,
+        field: ConnectionField,
     },
     BuildImage {
         form: BuildForm,
@@ -693,6 +741,15 @@ impl Modal {
             memory: String::new(),
             disk: String::new(),
             field: MachineField::Name,
+        }
+    }
+
+    fn create_connection() -> Self {
+        Modal::CreateConnection {
+            name: String::new(),
+            uri: String::new(),
+            identity: String::new(),
+            field: ConnectionField::Name,
         }
     }
 }
@@ -969,6 +1026,8 @@ pub struct PodmanDesktop {
     dashboard_fetched: Option<Instant>,
     /// When machines and connections were last read (see [`LOCAL_TTL`]).
     local_fetched: Option<Instant>,
+    /// Reachability of each configured connection, by name.
+    connection_checks: HashMap<String, ConnectionCheck>,
 
     toasts: Vec<Toast>,
     next_toast_id: u64,
@@ -1053,6 +1112,7 @@ impl PodmanDesktop {
             dashboard_error: None,
             dashboard_fetched: None,
             local_fetched: None,
+            connection_checks: HashMap::new(),
             toasts: Vec::new(),
             next_toast_id: 1,
         };

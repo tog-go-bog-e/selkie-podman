@@ -59,6 +59,11 @@ impl PodmanDesktop {
                 if let Some(local) = local {
                     this.local = local;
                     this.local_fetched = Some(Instant::now());
+                    // A connection added from the dialog (or configured outside the
+                    // app) gets probed as soon as it shows up.
+                    if this.tab == Tab::Connections {
+                        this.check_connections(false, cx);
+                    }
                 }
                 if let Some(dashboard) = dashboard {
                     this.dashboard_fetched = Some(Instant::now());

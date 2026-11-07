@@ -130,9 +130,12 @@ impl PodmanDesktop {
                 match column {
                     1 => text(&item.uri),
                     2 => text(&item.identity_label()),
-                    3 => number(
-                        (self.settings.connection.as_deref() == Some(item.name.as_str())) as u64,
-                    ),
+                    3 => number(match self.connection_checks.get(&item.name) {
+                        Some(ConnectionCheck::Reachable) => 0,
+                        Some(ConnectionCheck::Checking) => 1,
+                        None => 2,
+                        Some(ConnectionCheck::Unreachable(_)) => 3,
+                    }),
                     _ => text(&item.name),
                 }
             }

@@ -119,16 +119,16 @@ impl PodmanDesktop {
         let menu_name = connection.name.clone();
         let group = SharedString::from(format!("connection-row-{ix}"));
         let in_use = self.settings.connection.as_deref() == Some(connection.name.as_str());
-        let status = match (in_use, connection.default) {
-            (true, true) => "in use · default",
-            (true, false) => "in use",
-            (false, true) => "default",
-            (false, false) => "-",
-        };
-        let status_color = if in_use {
-            theme().accent
+        let (status, status_color) = self.connection_status(&connection.name);
+        let subtitle = if connection.default {
+            format!("{} · Podman default", connection.identity_label())
         } else {
-            theme().muted
+            connection.identity_label()
+        };
+        let name_budget = if in_use {
+            name_width - 14.0
+        } else {
+            name_width
         };
 
         let mut row = div()
@@ -168,11 +168,20 @@ impl PodmanDesktop {
                     .min_w(px(0.))
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
                             .w_full()
-                            .text_sm()
-                            .whitespace_nowrap()
-                            .truncate()
-                            .child(truncate_sm(&connection.name, name_width)),
+                            .when(in_use, |el| el.child(dot(theme().accent)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_sm()
+                                    .whitespace_nowrap()
+                                    .truncate()
+                                    .child(truncate_sm(&connection.name, name_budget)),
+                            ),
                     )
                     .child(
                         div()
@@ -181,7 +190,7 @@ impl PodmanDesktop {
                             .text_color(rgb(theme().faint))
                             .whitespace_nowrap()
                             .truncate()
-                            .child(truncate_xs(&connection.identity_label(), name_width)),
+                            .child(truncate_xs(&subtitle, name_width)),
                     ),
             );
 
@@ -1343,7 +1352,12 @@ impl PodmanDesktop {
     ) -> Div {
         let group = SharedString::from(format!("connection-row-{ix}"));
         let available = self.busy.is_none() && !in_use;
+        let checking = matches!(
+            self.connection_checks.get(&connection.name),
+            Some(ConnectionCheck::Checking)
+        );
         let name = connection.name.clone();
+        let check_name = connection.name.clone();
 
         div()
             .invisible()
@@ -1359,6 +1373,17 @@ impl PodmanDesktop {
             .bg(rgb(theme().panel_bg))
             .border_1()
             .border_color(rgb(theme().border))
+            .child(row_action_button(
+                SharedString::from(format!("connection-row-{ix}-check")),
+                "Check",
+                self.busy.is_none() && !checking,
+                theme().muted,
+                theme().hover_bg,
+                cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.check_connection(check_name.clone(), true, cx);
+                }),
+            ))
             .child(row_action_button(
                 SharedString::from(format!("connection-row-{ix}-use")),
                 "Use",

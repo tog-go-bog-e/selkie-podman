@@ -158,9 +158,10 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       Enter builds, Esc cancels
 - [x] Validation: tag checked with the image-reference rules, Containerfile must
       exist locally (missing path/field shows a toast and keeps the modal open)
-- [x] Runs `podman build -f <Containerfile> -t <tag> --platform <a,b>
-      --build-arg <key=value> <context>` with the Containerfile's directory as
-      the default context
+- [x] Runs `podman build -f <Containerfile> -t <tag> --platform <a>
+      --build-arg <key=value> <context>`, or `--manifest <tag>` instead of `-t`
+      when several platforms are selected so Podman stores a manifest list;
+      the Containerfile's directory is the default context
 - [x] Before building, optionally checks that the registries in the
       Containerfile's `FROM` lines are public or have credentials in Podman's
       auth files
@@ -487,6 +488,29 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       default, plus machine/connection counts
 - [x] **About** pane: app version, Podman version, settings path, renderer
 
+### Done (connections: add + reachability)
+
+- [x] **Add connection** in the Connections toolbar opens a form for name, URI
+      and an optional identity file; it runs the local
+      `podman system connection add [--identity FILE] NAME URI`. It never passes
+      `--default`, though Podman may itself mark the first connection as its
+      default
+- [x] URI validation accepts `ssh://` and absolute `unix://` endpoints only;
+      the identity file must exist and `~/` is expanded because the command is
+      spawned without a shell; invalid input keeps the modal open with a toast
+- [x] The Connections table gets a reachability **STATUS** column and the
+      details pane a **REACHABILITY** section with Podman's error text; rows,
+      the context menu, the details action bar and a toolbar **Check all** probe
+      with `podman --connection <name> info`
+- [x] Probes run on the background executor, one task per connection, with a
+      15 s cap so a dead SSH host cannot hang the UI; results are cached in
+      memory for the session and re-run on demand. They start on the first visit
+      to the tab and when a newly added connection appears
+- [x] Explicit checks toast `reachable` / `unreachable: <error>`; automatic ones
+      only update the column and details pane to avoid noise
+- [x] The in-use connection keeps an accent dot in the row and “Podman default”
+      moves to the subtitle, so STATUS no longer doubles as the in-use marker
+
 ### Done (packaging & desktop integration)
 
 - [x] `packaging/podman-desktop-rs.svg`: scalable app icon matching the tray mark
@@ -563,8 +587,9 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Long-running commands | `src/ui/output.rs` + `start_output`: compose up/down, image builds and pulls stream stdout/stderr into one panel, one at a time |
 | Registries | `podman push` with a validated destination; `podman login --password-stdin` / `podman logout` with credentials kept out of argv; loopback registries skip TLS verification |
 | Accounts | Registry logins parsed from Podman's auth files (`REGISTRY_AUTH_FILE`, runtime/config `auth.json`, Docker config); username and a masked password (or `token`), a `⋮` menu with Log out, Add registry, and Configure buttons for Docker Hub/Quay/GitHub/GCR |
+| Connections | `podman system connection list` read locally; **Add connection** runs `podman system connection add [--identity FILE] NAME URI` (ssh:// or absolute unix://, `~/` expanded, no `--default`); reachability probes run `podman --connection NAME info` in background tasks (15 s cap) and feed the STATUS column, details pane and explicit-check toasts; every engine command gets `--connection NAME` |
 | Settings page | Sub-navigation with Registries, Appearance (theme, refresh, log window, panel resets), Engine and About; the selected pane is persisted |
-| Builds | `podman build -f <Containerfile> -t <tag> [--platform …] [--build-arg …] <context>`; context defaults to the Containerfile directory, all inputs validated, shared output panel |
+| Builds | `podman build -f <Containerfile> (-t <tag> | --manifest <tag>) [--platform …] [--build-arg …] <context>` (manifest lists for multi-platform); context defaults to the Containerfile directory, all inputs validated, shared output panel |
 | Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
 | Stats | `podman stats --no-stream` polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
 | Dashboard | Counts from the snapshot; `podman info` + `podman system df` fetched only while the tab is visible and cached for 30 s (info probes the store and takes seconds) |
@@ -666,11 +691,14 @@ Priorities, not a strict order. S/M/L are rough effort sizes; see
 ### Quick wins worth slotting earlier
 
 - Build cache/target options (`--no-cache`, `--target`, cache mounts).
+- Edit/remove connections from the UI (removal still needs
+  `podman system connection remove`), periodic re-probing instead of on-demand
+  checks, and `tcp://` connections with TLS options.
 
 Done already: pause/resume, rename, sortable columns, raw inspect JSON viewer,
 streamed pull progress, "load older" logs, resizable panels, build
 context/platform/args and table ellipsis; configurable log window (B6) and
-Copy ID/name (B3).
+Copy ID/name (B3); adding connections and checking their reachability (2026-11-07).
 
 ## Recommended next step
 
@@ -860,7 +888,11 @@ project, project removal after Down with output retained, and compose project
 labels on container rows and details. After B8 — Connections tab against a real
 configured SSH connection, engine switching to it (offline error shown, local
 lists still usable) and back to the Podman default engine, plus the Machines
-empty state; machine/connection parsing covered by unit tests. Stats verified on
+empty state; machine/connection parsing covered by unit tests. Connection
+add/reachability (2026-11-07) verified against an unreachable `unix://`
+endpoint in an isolated config: the automatic probe marked it `unreachable`, the
+details pane showed Podman's error and the add dialog rendered with its
+validation fields. Stats verified on
 running containers (graphs update, history survives tab switches) and on a
 stopped container (notice instead of graphs). Build verified end to end through
 the modal: two-field entry with Tab switching, streamed STEP/COMMIT output,
@@ -1162,7 +1194,9 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     platform (`amd64`) or context shows a toast and keeps the modal open; a valid
     build runs with `--platform` and repeated `--build-arg` in the streamed
     command line, the image lands with that platform, and the build arg is
-    visible in the image's output (`ARG` → `RUN echo`).
+    visible in the image's output (`ARG` → `RUN echo`). Select two platforms and
+    confirm the command uses `--manifest` and that `podman images` lists the
+    manifest list.
 44. Images → select an image → Run (row action, context menu or action bar):
     fill name, ports, environment, volumes and command, then run. The container
     appears running with the port mapping, env and mount recorded; leaving the
@@ -1292,6 +1326,12 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     tray tooltip is still there and idle CPU stays at ~0. **Show window** in the
     tray — or launching the binary again — maps it back with the previous
     selection and logs, and `Ctrl+Q` (or the tray's **Quit**) still exits.
+62. Connections → **Add connection**: add a `unix://` endpoint that does not
+    exist (or an SSH host that is down) with no identity. It appears with
+    STATUS `unreachable` after the automatic probe; selecting it shows the
+    REACHABILITY section with Podman's error, and **Check** toasts the result.
+    A bad name/URI or a missing identity file keeps the dialog open with a
+    toast. `podman system connection remove <name>` removes the test entry.
 
 ## File map
 
