@@ -105,7 +105,11 @@ Current scope: **manage containers and images on the local Podman engine**.
   Docker Hub, Red Hat Quay, GitHub and Google Container Registry.
 - **Desktop integration**: a system tray icon (Show window / Refresh / Quit), a
   single-instance lock so re-launching focuses the running app, and window size
-  (plus maximized state) restored on startup.
+  (plus maximized state) restored on startup. **Closing the window docks the app
+  in the tray** instead of quitting: its window is unmapped (no taskbar entry),
+  the process keeps running at ~0% CPU, and the tray's *Show window* or another
+  launch brings it back. Quit from the tray or with `Ctrl/Cmd+Q`; without an X
+  display to unmap, closing quits as usual.
 
 ## Requirements
 

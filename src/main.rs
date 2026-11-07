@@ -69,7 +69,16 @@ fn main() {
                     entity.update(cx, |view, _cx| {
                         view.remember_window(window.bounds(), window.is_maximized());
                     });
-                    true
+                    // Closing docks the app in the tray instead of quitting; the
+                    // tray's Show window (or a second launch) brings it back, and
+                    // Quit there or Ctrl/Cmd+Q ends the process. Without an X
+                    // display to unmap there is nothing to dock, so close.
+                    if desktop::set_window_visible(false) {
+                        false
+                    } else {
+                        cx.quit();
+                        true
+                    }
                 });
             })
             .ok();
@@ -99,6 +108,8 @@ fn main() {
                 // Only writes to disk when the size actually changed.
                 view.remember_window(window.bounds(), window.is_maximized());
                 if activate {
+                    // The window may be unmapped while the app sits in the tray.
+                    desktop::set_window_visible(true);
                     window.activate_window();
                 }
                 if refresh {

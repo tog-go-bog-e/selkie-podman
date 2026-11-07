@@ -443,6 +443,17 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       commands). The reader now consumes the whole stream and kills the exporter
       if tar fails.
 
+### Done (close to tray)
+
+- [x] The window's close request is vetoed and the X11 window is unmapped instead
+      (GPUI has no hide API and a closed window is gone for good), so the process,
+      the tray icon and all in-memory state survive with **0 CPU** while docked
+- [x] The tray's **Show window** and a second launch map the window again and
+      activate it; `Ctrl/Cmd+Q` and the tray's **Quit** still end the process
+      (quit does not go through the close handler)
+- [x] Without an X display to unmap (native Wayland) there is nothing to dock, so
+      closing falls through to `cx.quit()`
+
 ### Done (Accounts & Settings pages)
 
 - [x] **Settings** is a sub-navigation plus a pane, like the upstream app:
@@ -528,7 +539,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Styling | `ui/theme.rs` palettes (dark / light / high contrast) via a thread-local current theme |
 | Layout | Sidebar and details widths from settings, adjusted by draggable splitters (`ui/resizer.rs`) and clamped per frame to the window |
 | Persistence | `ui/settings.rs` → JSON in the XDG config dir (theme, tab, refresh, log window, panel widths, window size) |
-| Desktop integration | `src/desktop.rs`: `flock` + Unix socket for single instance; `ksni` (D-Bus) tray |
+| Desktop integration | `src/desktop.rs`: `flock` + Unix socket for single instance; `ksni` (D-Bus) tray; close-to-tray by unmapping the X11 window (map + activate from the tray or a second launch) |
 | Engines | `podman machine` / `podman system connection` parsed into a separate `LocalState`; selected connection injected as `--connection` |
 | Machines | `podman machine init` (streamed), `machine rm -f` behind a confirmation, and `machine ssh` in the shared PTY terminal; machine commands are local and ignore `--connection` |
 | Lifecycle | Close handler + `Ctrl/Cmd+Q` + tray Quit; window size watched every 500 ms |
@@ -1022,6 +1033,13 @@ username; the Accounts tab showed the same table; the sub-navigation switched
 panes and `settings_section` followed; and the 5 s refresh, 30 m log window,
 theme pills and panel **Reset** all persisted as before.
 
+Close-to-tray was verified on 2026-11-06 on Cinnamon (X11): sending
+`WM_DELETE_WINDOW` to the app window left the process running with the window
+`IsUnMapped` (it leaves the taskbar and Alt-Tab), the tray D-Bus names still
+owned and 0 CPU ticks over five seconds; launching the binary again sent
+`activate`, and within one 500 ms tick the window was `IsViewable` again and
+rendering the previous selection. `Ctrl+Q` still ended the process.
+
 1. Select a container: Summary renders, Logs streams and follows.
 2. Start/stop/restart a disposable container; state and buttons update.
 3. Delete with confirmation; selection and logs close.
@@ -1258,6 +1276,12 @@ theme pills and panel **Reset** all persisted as before.
     puts the sidebar/details widths back to 224/400 px after a drag. Engine shows
     the current connection; About shows the app version, Podman version and
     settings path.
+61. Close to tray: click the window's X. The window disappears and leaves the
+    taskbar, but `pgrep -f '\./podman-desktop-rs$'` (or the process list) still
+    shows it, `xwininfo -id <window> | grep 'Map State'` says `IsUnMapped`, the
+    tray tooltip is still there and idle CPU stays at ~0. **Show window** in the
+    tray — or launching the binary again — maps it back with the previous
+    selection and logs, and `Ctrl+Q` (or the tray's **Quit**) still exits.
 
 ## File map
 

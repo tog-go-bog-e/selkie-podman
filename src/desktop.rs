@@ -313,6 +313,37 @@ fn is_glyph(x: f32, y: f32, size: f32, scale: f32) -> bool {
     GLYPH[row][column] == b'1'
 }
 
+/// Hide or show the main window without destroying it.
+///
+/// GPUI has no hide API, and letting the window close would remove it for good,
+/// so the close request is vetoed and the X11 window is unmapped instead: the
+/// process, the tray icon and the GTK-free UI state all stay alive and the
+/// window can be mapped again from the tray. Returns whether a window was found.
+pub fn set_window_visible(visible: bool) -> bool {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt;
+
+    if std::env::var_os("DISPLAY").is_none() {
+        return false;
+    }
+    let Ok((connection, screen)) = x11rb::connect(None) else {
+        return false;
+    };
+    let root = connection.setup().roots[screen].root;
+    let Ok(Some(window)) = find_window(&connection, root, std::process::id()) else {
+        return false;
+    };
+
+    let result = if visible {
+        connection.map_window(window).map(|_| ())
+    } else {
+        connection.unmap_window(window).map(|_| ())
+    };
+    result.ok();
+    let _ = connection.flush();
+    true
+}
+
 /// Give the main window a real icon on X11.
 ///
 /// The window belongs to GPUI's X connection, but X properties are global, so a
