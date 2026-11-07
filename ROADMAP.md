@@ -443,6 +443,23 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       commands). The reader now consumes the whole stream and kills the exporter
       if tar fails.
 
+### Done (Accounts & Settings pages)
+
+- [x] **Accounts** page: lists every registry credential Podman would use, read
+      from `REGISTRY_AUTH_FILE`, the runtime `containers/auth.json`, the config
+      one and `~/.docker/config.json`, merged and sorted by registry. Only the
+      registry, the username (base64-decoded from `auth`) and whether the entry
+      holds a password or a token are shown; the credential files in play are
+      listed underneath. **Log in…** opens the existing registry login modal and
+      each row has a **Log out** button that goes through the confirmation
+      dialog, so a logout only ever runs `podman logout <registry>`
+- [x] **Settings** page: theme pills, auto-refresh and log-window choices (the
+      log stream restarts when the window changes), panel-width reset, the
+      current connection with a way back to Podman's default, and an About panel
+      with the app version, Podman version, settings path and renderer. The two
+      inline sidebar rows it replaces are gone, and both pages are pinned to the
+      bottom of the navigation like the upstream app
+
 ### Done (packaging & desktop integration)
 
 - [x] `packaging/podman-desktop-rs.svg`: scalable app icon matching the tray mark
@@ -518,6 +535,8 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Compose | Projects grouped from `ps` labels; `podman compose up -d` / `restart` / `build` / `down` stream through the shared panel, the Logs tab streams from the provider |
 | Long-running commands | `src/ui/output.rs` + `start_output`: compose up/down, image builds and pulls stream stdout/stderr into one panel, one at a time |
 | Registries | `podman push` with a validated destination; `podman login --password-stdin` / `podman logout` with credentials kept out of argv; loopback registries skip TLS verification |
+| Accounts | Registry logins parsed from Podman's auth files (`REGISTRY_AUTH_FILE`, runtime/config `auth.json`, Docker config); shows registry, username and credential type only, with log in/log out actions |
+| Settings page | Theme, auto-refresh interval, log window, panel-width reset, current connection and build/about information; replaces the old inline sidebar rows |
 | Builds | `podman build -f <Containerfile> -t <tag> [--platform …] [--build-arg …] <context>`; context defaults to the Containerfile directory, all inputs validated, shared output panel |
 | Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
 | Stats | `podman stats --no-stream` polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
@@ -984,6 +1003,17 @@ entry, seven hicolor icons, man page and DEP-5 docs; `lintian` reports nothing;
 resolves to a clean single-package install; the extracted binary starts, renders
 and still sets all seven `_NET_WM_ICON` sizes.
 
+Accounts and Settings were verified on 2026-11-06 with a throwaway
+`REGISTRY_AUTH_FILE` holding two fake registries alongside the real one: the
+Accounts page listed all three with their usernames and credential types and
+named both auth files, **Log in…** opened the registry dialog, and logging out of
+`registry.one.example` through the confirmation removed exactly that entry from
+the file, showed the toast and left the list at two. On the Settings page each
+theme repainted the window and was written to `settings.json`, the 5 s refresh
+and 30 m log window choices were saved, dragging the sidebar to 344 px and
+pressing its **Reset** restored 224 px, and the app reopened on Settings with
+the dark theme after a restart.
+
 1. Select a container: Summary renders, Logs streams and follows.
 2. Start/stop/restart a disposable container; state and buttons update.
 3. Delete with confirmation; selection and logs close.
@@ -1203,6 +1233,18 @@ and still sets all seven `_NET_WM_ICON` sizes.
     `^[[200~…^[[201~`. With `printf '\033[?1000h\033[?1006h'` a click in
     `cat -v` prints `^[[<0;x;yM` and `…m`, one wheel notch prints
     `^[[<64;x;yM` (or `<65` scrolling down), and no selection is created.
+59. Accounts: the page lists the registries in `podman login`'s auth file with
+    `user · password`/`token` under each name, and the CREDENTIAL FILES section
+    names the files it read. **Log in…** opens the registry login dialog. **Log
+    out** opens the confirmation with the registry prefilled; confirming removes
+    the entry from the auth file, shows a toast and drops the row. Run this
+    against a throwaway `REGISTRY_AUTH_FILE` if the real credentials matter.
+60. Settings: the sidebar ends with Accounts and Settings (no inline theme or
+    refresh rows). On the page, each theme repaints the window and is written to
+    `settings.json`; refresh and log-window choices update the saved value (and
+    restart a live log stream); **Reset** puts the sidebar/details widths back to
+    224/400 px after a drag; the About panel shows the app version, Podman
+    version and settings path. The chosen tab is restored on the next launch.
 
 ## File map
 
@@ -1210,7 +1252,9 @@ and still sets all seven `_NET_WM_ICON` sizes.
 - `src/terminal.rs` — PTY + `podman exec` session and `vt100` emulator state
 - `src/desktop.rs` — single-instance lock/socket, tray icon, signal channel
 - `src/ui.rs` — entity, shared state, polling, selection, logs plumbing, actions
-- `src/ui/sidebar.rs` — navigation, engine status, settings rows
+- `src/ui/sidebar.rs` — navigation, engine status, Accounts/Settings entries
+- `src/ui/accounts.rs` — registry credentials read from Podman's auth files
+- `src/ui/preferences.rs` — the Settings page
 - `src/ui/table.rs` — toolbars, search field, table headers and bodies
 - `src/ui/rows.rs` — row builders and hover action buttons
 - `src/ui/events.rs` — `podman events` stream, coalescing, reconnects, filters

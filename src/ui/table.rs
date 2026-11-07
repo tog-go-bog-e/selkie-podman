@@ -16,6 +16,8 @@ impl PodmanDesktop {
             Tab::Networks => "Networks",
             Tab::Machines => "Machines",
             Tab::Connections => "Connections",
+            Tab::Accounts => "Accounts",
+            Tab::Settings => "Settings",
         };
 
         div()
@@ -77,6 +79,7 @@ impl PodmanDesktop {
             Tab::Networks => "Search networks…",
             Tab::Machines => "Search machines…",
             Tab::Connections => "Search connections…",
+            Tab::Accounts | Tab::Settings => "Search…",
         };
 
         let mut input = div()
@@ -176,6 +179,8 @@ impl PodmanDesktop {
             Tab::Networks => self.snapshot.networks.len(),
             Tab::Machines => self.local.machines.len(),
             Tab::Connections => self.local.connections.len(),
+            Tab::Accounts => self.accounts.len(),
+            Tab::Settings => 0,
         };
         let filtered = !self.search.trim().is_empty();
         let busy = self.busy.is_some();
@@ -389,7 +394,7 @@ impl PodmanDesktop {
             .font_weight(FontWeight::SEMIBOLD);
 
         match (self.tab, compact) {
-            (Tab::Dashboard, _) => header,
+            (Tab::Dashboard | Tab::Accounts | Tab::Settings, _) => header,
             (Tab::Containers, false) => header
                 .child(self.sortable_header("NAME", 0, None, cx))
                 .child(self.sortable_header("IMAGE", 1, None, cx))
@@ -595,6 +600,16 @@ impl PodmanDesktop {
                         "No connections",
                         "The app is using Podman's default engine. Add one with `podman system connection add`."
                             .to_string(),
+                        "Retry",
+                    ),
+                    Tab::Accounts => (
+                        "No registry accounts",
+                        "Log in to a registry to push or pull private images.".to_string(),
+                        "Retry",
+                    ),
+                    Tab::Settings => (
+                        "Nothing to show",
+                        "Settings renders its own page instead of a table.".to_string(),
                         "Retry",
                     ),
                 },

@@ -199,27 +199,6 @@ pub(super) fn small_button_dyn(
         )
 }
 
-pub(super) fn settings_row(
-    id: &'static str,
-    label: impl Into<SharedString>,
-    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .cursor_pointer()
-        .hover(|style| style.bg(rgb(theme().hover_bg)))
-        .on_click(on_click)
-        .child(
-            div()
-                .text_xs()
-                .text_color(rgb(theme().muted))
-                .child(label.into()),
-        )
-}
-
 pub(super) fn row_action_button(
     id: SharedString,
     label: &'static str,

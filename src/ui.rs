@@ -1,5 +1,6 @@
 //! The GPUI view: sidebar, tables, details pane, actions and toasts.
 
+mod accounts;
 mod compose;
 mod dashboard;
 mod details;
@@ -9,6 +10,7 @@ mod events;
 mod helpers;
 mod image;
 mod output;
+mod preferences;
 mod resizer;
 mod rows;
 pub(crate) mod settings;
@@ -41,7 +43,7 @@ use crate::podman::{
 use crate::terminal::TerminalSession;
 
 use settings::Settings;
-use theme::{current_kind, set_kind, theme};
+use theme::{set_kind, theme};
 
 use helpers::*;
 
@@ -74,6 +76,8 @@ pub(crate) enum Tab {
     Networks,
     Machines,
     Connections,
+    Accounts,
+    Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -734,6 +738,10 @@ pub struct PodmanDesktop {
     /// Monospace font and cell width, resolved on the first terminal paint.
     terminal_font: std::rc::Rc<std::cell::RefCell<Option<terminal::TerminalMetrics>>>,
 
+    /// Registry logins Podman would use, read from its auth file(s).
+    accounts: Vec<podman::Account>,
+    accounts_error: Option<String>,
+
     output_lines: Vec<String>,
     output_title: Option<String>,
     output_handle: ScrollHandle,
@@ -815,6 +823,8 @@ impl PodmanDesktop {
             terminal_origin: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
             terminal_selection: None,
             terminal_font: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            accounts: Vec::new(),
+            accounts_error: None,
             output_lines: Vec::new(),
             output_title: None,
             output_handle: ScrollHandle::new(),
@@ -864,6 +874,11 @@ impl PodmanDesktop {
     // -----------------------------------------------------------------------
 
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
+        // Login and logout run through the output panel and end in a refresh, so
+        // the credential list follows them.
+        if self.tab == Tab::Accounts {
+            self.load_accounts();
+        }
         if self.loading {
             // Remember the request so an event arriving during a fetch still
             // results in a fresh snapshot once the current one lands.
@@ -1029,7 +1044,7 @@ impl PodmanDesktop {
                 }
             }
             "/" => {
-                if self.tab == Tab::Dashboard {
+                if matches!(self.tab, Tab::Dashboard | Tab::Accounts | Tab::Settings) {
                     return;
                 }
                 self.close_context_menu(cx);
@@ -1134,7 +1149,7 @@ impl PodmanDesktop {
                 let name = self.local.connections[index].name.clone();
                 self.select_connection(name, cx);
             }
-            Tab::Dashboard => {}
+            Tab::Dashboard | Tab::Accounts | Tab::Settings => {}
         }
     }
 
@@ -1183,22 +1198,22 @@ impl PodmanDesktop {
         );
     }
 
-    fn cycle_theme(&mut self, cx: &mut Context<Self>) {
-        let next = current_kind().next();
-        self.settings.theme = next;
-        set_kind(next);
-        self.settings.save();
-        cx.notify();
-    }
-
-    fn cycle_refresh(&mut self, cx: &mut Context<Self>) {
-        self.settings.next_refresh();
-        self.settings.save();
-        cx.notify();
-    }
-
     fn cycle_log_window(&mut self, cx: &mut Context<Self>) {
         self.settings.next_log_window();
+        self.apply_log_window(cx);
+    }
+
+    /// Store a log window picked in Settings and restart any live stream so the
+    /// change takes effect immediately.
+    fn set_log_window(&mut self, window: &str, cx: &mut Context<Self>) {
+        if self.settings.log_window == window {
+            return;
+        }
+        self.settings.log_window = window.to_string();
+        self.apply_log_window(cx);
+    }
+
+    fn apply_log_window(&mut self, cx: &mut Context<Self>) {
         self.settings.save();
         match self.logs_target.clone() {
             Some(LogTarget::Container(id)) => self.start_logs(&id, cx),
@@ -2957,7 +2972,7 @@ impl PodmanDesktop {
                 })
                 .map(|(index, _)| index)
                 .collect(),
-            Tab::Dashboard => Vec::new(),
+            Tab::Dashboard | Tab::Accounts | Tab::Settings => Vec::new(),
         };
         self.visible_indices = self.sorted(indices);
     }
@@ -3084,7 +3099,7 @@ impl PodmanDesktop {
                     _ => text(&item.name),
                 }
             }
-            Tab::Dashboard => text(""),
+            Tab::Dashboard | Tab::Accounts | Tab::Settings => text(""),
         }
     }
 
@@ -3106,7 +3121,8 @@ impl PodmanDesktop {
             Tab::Networks => self.snapshot.networks.len(),
             Tab::Machines => self.local.machines.len(),
             Tab::Connections => self.local.connections.len(),
-            Tab::Dashboard => 0,
+            Tab::Accounts => self.accounts.len(),
+            Tab::Dashboard | Tab::Settings => 0,
         };
         let shown = self.visible_indices.len();
         let noun = match self.tab {
@@ -3118,7 +3134,8 @@ impl PodmanDesktop {
             Tab::Networks => "network",
             Tab::Machines => "machine",
             Tab::Connections => "connection",
-            Tab::Dashboard => "resource",
+            Tab::Accounts => "registry login",
+            Tab::Dashboard | Tab::Settings => "resource",
         };
         if self.tab == Tab::Dashboard {
             return if self.snapshot.version.is_empty() {
@@ -3128,6 +3145,18 @@ impl PodmanDesktop {
                     "resources, disk usage and engine details · {}",
                     self.snapshot.version
                 )
+            };
+        }
+        if self.tab == Tab::Settings {
+            return "appearance, refresh, panels and engine details".to_string();
+        }
+        if self.tab == Tab::Accounts {
+            let count = self.accounts.len();
+            let plural = if count == 1 { "" } else { "s" };
+            return if self.snapshot.version.is_empty() {
+                format!("{count} registry login{plural}")
+            } else {
+                format!("{count} registry login{plural} · {}", self.snapshot.version)
             };
         }
         let plural = if total == 1 { "" } else { "s" };
@@ -3213,13 +3242,14 @@ impl Render for PodmanDesktop {
             .flex_1()
             .min_w(px(0.))
             .child(self.header(cx));
-        column = if self.tab == Tab::Dashboard {
-            column.child(self.dashboard_view())
-        } else {
-            column
+        column = match self.tab {
+            Tab::Dashboard => column.child(self.dashboard_view()),
+            Tab::Accounts => column.child(self.accounts_view(cx)),
+            Tab::Settings => column.child(self.settings_view(cx)),
+            _ => column
                 .child(self.toolbar(window, cx))
                 .child(self.table_header(cx))
-                .child(self.body(cx))
+                .child(self.body(cx)),
         };
 
         let mut main_view = div()

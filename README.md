@@ -96,6 +96,11 @@ Current scope: **manage containers and images on the local Podman engine**.
   confirms and `Esc` cancels.
 - **Themes and settings**: dark, light and high-contrast themes; theme, active
   tab, refresh interval, log window and window size all persist across restarts.
+  The **Settings** page holds appearance, refresh, log window, panel widths and
+  engine information.
+- **Accounts**: the **Accounts** page lists every registry Podman has credentials
+  for (read from its auth files), with the username and whether it stores a
+  password or a token; log in or out from there without leaving the app.
 - **Desktop integration**: a system tray icon (Show window / Refresh / Quit), a
   single-instance lock so re-launching focuses the running app, and window size
   (plus maximized state) restored on startup.
@@ -236,7 +241,10 @@ the **Connections** tab to make this app talk to the VM.
 - `src/podman.rs` talks to the CLI: `podman ps`, `podman images`, `podman inspect`,
   `podman start/stop/restart/pause/unpause/rename/rm`, `podman run`,
   `podman pull/tag/rmi`, `podman compose`, `podman info` / `podman system df`
-  (Dashboard only) and a long-running `podman logs -f`.
+  (Dashboard only) and a long-running `podman logs -f`. Registry accounts are
+  read straight from Podman's auth files (`REGISTRY_AUTH_FILE`, the runtime
+  `auth.json` and `~/.docker/config.json`); only the username and credential
+  type are shown, never the secret.
   All commands use argument arrays (no shell), and user-supplied image
   references, names, port mappings, env entries and mounts are validated before
   being passed through. Compose projects are derived from the labels on
@@ -244,8 +252,10 @@ the **Connections** tab to make this app talk to the VM.
 - `src/ui.rs` holds the `PodmanDesktop` entity: shared state, polling, selection
   and action plumbing. Rendering is split by concern (all `impl PodmanDesktop`
   or shared helpers, reusing the state in `ui.rs`):
-  - `src/ui/sidebar.rs` — navigation, engine status, theme/refresh rows
+  - `src/ui/sidebar.rs` — navigation, engine status, Accounts/Settings entries
   - `src/ui/dashboard.rs` — resource cards, disk usage and engine details
+  - `src/ui/accounts.rs` — registry credentials read from Podman's auth files
+  - `src/ui/preferences.rs` — the Settings page (appearance, panels, engine, about)
   - `src/ui/table.rs` — toolbars, search field, sortable headers and table bodies
   - `src/ui/rows.rs` — all row builders and hover action buttons
   - `src/ui/compose.rs` — compose project summary and actions
@@ -344,14 +354,15 @@ Settings live in `$XDG_CONFIG_HOME/podman-desktop-rs/settings.json`, falling bac
 to `~/.config/podman-desktop-rs/settings.json`, and are saved whenever they
 change:
 
-- **Theme** — cycle Dark → Light → High contrast in the sidebar.
-- **Auto refresh** — 3 / 5 / 10 / 30 seconds in the sidebar; used as the fallback
-  poll when the `podman events` stream is unavailable or quiet.
-- **Log window** — 5m / 10m / 30m / 1h via the `last …` button in the log toolbar;
-  passed to `podman logs --since`.
+- **Theme** — Dark / Light / High contrast on the **Settings** page.
+- **Auto refresh** — 3 / 5 / 10 / 30 seconds on the **Settings** page; used as the
+  fallback poll when the `podman events` stream is unavailable or quiet.
+- **Log window** — 5m / 10m / 30m / 1h on the **Settings** page or via the
+  `last …` button in the log toolbar; passed to `podman logs --since`.
 - **Active tab** — restored on the next launch.
 - **Sidebar and details widths** — set by dragging the dividers, saved on
-  release, double-click to reset; clamped on load and when the window shrinks.
+  release, double-click to reset (or **Reset** on the Settings page); clamped on
+  load and when the window shrinks.
 - **Window size and maximized state** — recorded every 500 ms when they change,
   and on close.
 - **Connection** — the Podman connection (or the local default) used for every

@@ -83,6 +83,9 @@ impl PodmanDesktop {
                     if tab == Tab::Dashboard {
                         this.refresh_dashboard(cx);
                     }
+                    if tab == Tab::Accounts {
+                        this.load_accounts();
+                    }
                 }
                 cx.notify();
             }))
@@ -235,7 +238,14 @@ impl PodmanDesktop {
                     )),
             )
             .child(div().flex_1())
-            .child(self.sidebar_settings(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(self.nav_item(Tab::Accounts, "nav-accounts", "Accounts", None, cx))
+                    .child(self.nav_item(Tab::Settings, "nav-settings", "Settings", None, cx)),
+            )
             .child(div().h(px(8.)))
             .child(
                 div()
@@ -294,22 +304,5 @@ impl PodmanDesktop {
                             .child("gpui · experimental"),
                     ),
             )
-    }
-
-    fn sidebar_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(settings_row(
-                "settings-theme",
-                format!("Theme · {}", current_kind().label()),
-                cx.listener(|this, _, _, cx| this.cycle_theme(cx)),
-            ))
-            .child(settings_row(
-                "settings-refresh",
-                format!("Auto refresh · {}s", self.settings.refresh_secs),
-                cx.listener(|this, _, _, cx| this.cycle_refresh(cx)),
-            ))
     }
 }

@@ -12,7 +12,7 @@ impl PodmanDesktop {
             Tab::Networks => self.network_row(self.visible_indices[ix], cx),
             Tab::Machines => self.machine_row(self.visible_indices[ix], cx),
             Tab::Connections => self.connection_row(self.visible_indices[ix], cx),
-            Tab::Dashboard => div().into_any_element(),
+            Tab::Dashboard | Tab::Accounts | Tab::Settings => div().into_any_element(),
         }
     }
 

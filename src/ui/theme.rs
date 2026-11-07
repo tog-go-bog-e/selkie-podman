@@ -21,14 +21,6 @@ impl ThemeKind {
             ThemeKind::HighContrast => "High contrast",
         }
     }
-
-    pub fn next(self) -> Self {
-        match self {
-            ThemeKind::Dark => ThemeKind::Light,
-            ThemeKind::Light => ThemeKind::HighContrast,
-            ThemeKind::HighContrast => ThemeKind::Dark,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

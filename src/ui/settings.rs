@@ -106,10 +106,6 @@ impl Settings {
         save(self);
     }
 
-    pub fn next_refresh(&mut self) {
-        self.refresh_secs = next_option(&REFRESH_OPTIONS, self.refresh_secs);
-    }
-
     pub fn next_log_window(&mut self) {
         let current = LOG_WINDOWS
             .iter()
@@ -172,14 +168,6 @@ fn default_log_window() -> String {
     "10m".to_string()
 }
 
-fn next_option<T: Copy + PartialEq>(options: &[T], current: T) -> T {
-    let index = options
-        .iter()
-        .position(|option| *option == current)
-        .unwrap_or(0);
-    options[(index + 1) % options.len()]
-}
-
 pub fn load() -> Settings {
     let Some(path) = settings_path() else {
         return Settings::default();
@@ -202,6 +190,11 @@ pub fn save(settings: &Settings) {
     }
 }
 
+/// Where `settings.json` lives, when the environment provides a config dir.
+pub fn path() -> Option<PathBuf> {
+    settings_path()
+}
+
 fn settings_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
@@ -215,15 +208,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cycles_refresh_options() {
-        let mut settings = Settings::default();
-        assert_eq!(settings.refresh_secs, 3);
-        settings.next_refresh();
-        assert_eq!(settings.refresh_secs, 5);
-        for _ in 0..3 {
-            settings.next_refresh();
-        }
-        assert_eq!(settings.refresh_secs, 3);
+    fn defaults_are_offered_options() {
+        let settings = Settings::default();
+        assert!(REFRESH_OPTIONS.contains(&settings.refresh_secs));
+        assert!(LOG_WINDOWS.contains(&settings.log_window.as_str()));
     }
 
     #[test]

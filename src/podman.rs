@@ -1937,6 +1937,140 @@ pub fn logout(registry: Option<&str>) -> Result<String, String> {
     execute(logout_command(registry)?, "logout")
 }
 
+/// One registry credential Podman would use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Account {
+    pub registry: String,
+    /// Username from the stored credential, or `unknown` when only a token is kept.
+    pub username: String,
+    pub kind: AccountKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountKind {
+    Password,
+    Token,
+}
+
+impl AccountKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            AccountKind::Password => "password",
+            AccountKind::Token => "token",
+        }
+    }
+}
+
+/// Files Podman may read credentials from, in precedence order.
+///
+/// `podman login` writes to the runtime file for rootless users; the others are
+/// honoured so an entry created with another tool (or `REGISTRY_AUTH_FILE`) is
+/// still listed.
+pub fn auth_files() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let mut files = Vec::new();
+    if let Some(path) = std::env::var_os("REGISTRY_AUTH_FILE") {
+        files.push(PathBuf::from(path));
+    }
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+        files.push(PathBuf::from(runtime).join("containers/auth.json"));
+    }
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    if let Some(config) = config {
+        files.push(config.join("containers/auth.json"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        files.push(PathBuf::from(home).join(".docker/config.json"));
+    }
+    files
+}
+
+/// Registries this user is logged in to, merged across [`auth_files`].
+///
+/// Credentials themselves are never returned: only the registry, the username
+/// and whether a password or a token backs the entry.
+pub fn accounts() -> Result<Vec<Account>, String> {
+    let mut accounts: BTreeMap<String, Account> = BTreeMap::new();
+    for path in auth_files() {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        for account in parse_accounts(&contents) {
+            accounts.entry(account.registry.clone()).or_insert(account);
+        }
+    }
+    Ok(accounts.into_values().collect())
+}
+
+fn parse_accounts(contents: &str) -> Vec<Account> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(contents) else {
+        return Vec::new();
+    };
+    let Some(auths) = json.get("auths").and_then(|value| value.as_object()) else {
+        return Vec::new();
+    };
+
+    auths
+        .iter()
+        .map(|(registry, entry)| {
+            let kind =
+                if entry.get("identitytoken").is_some() || entry.get("registrytoken").is_some() {
+                    AccountKind::Token
+                } else {
+                    AccountKind::Password
+                };
+            let username = entry
+                .get("auth")
+                .and_then(|value| value.as_str())
+                .and_then(base64_decode)
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .and_then(|decoded| decoded.split(':').next().map(str::to_string))
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "unknown".to_string());
+            Account {
+                registry: registry.clone(),
+                username,
+                kind,
+            }
+        })
+        .collect()
+}
+
+/// Standard-alphabet base64, which is how auth files store `user:password`.
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn sextet(byte: u8) -> Option<u32> {
+        Some(match byte {
+            b'A'..=b'Z' => u32::from(byte - b'A'),
+            b'a'..=b'z' => u32::from(byte - b'a') + 26,
+            b'0'..=b'9' => u32::from(byte - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        })
+    }
+
+    let mut bits = 0u32;
+    let mut available = 0u32;
+    let mut decoded = Vec::new();
+    for &byte in input.as_bytes() {
+        if matches!(byte, b'=' | b'\n' | b'\r') {
+            continue;
+        }
+        bits = (bits << 6) | sextet(byte)?;
+        available += 6;
+        if available >= 8 {
+            available -= 8;
+            decoded.push((bits >> available) as u8);
+            bits &= (1 << available) - 1;
+        }
+    }
+    Some(decoded)
+}
+
 /// `localhost`, `127.0.0.1` and `[::1]` (with optional port) are treated as
 /// local development registries without TLS.
 fn is_loopback_registry(reference: &str) -> bool {
@@ -4136,5 +4270,45 @@ mod tests {
         assert_eq!(PodAction::Start.verb(), "start");
         assert_eq!(PodAction::Stop.verb(), "stop");
         assert_eq!(PodAction::Restart.verb(), "restart");
+    }
+
+    #[test]
+    fn decodes_stored_credentials() {
+        assert_eq!(base64_decode("dXNlcjpwYXNz"), Some(b"user:pass".to_vec()));
+        assert_eq!(base64_decode("YWJj"), Some(b"abc".to_vec()));
+        assert_eq!(base64_decode("YWJj\n"), Some(b"abc".to_vec()));
+        assert_eq!(base64_decode("not base64!"), None);
+    }
+
+    #[test]
+    fn parses_registry_accounts_from_an_auth_file() {
+        let json = r#"{"auths":{
+            "quay.io": {"auth": "dXNlcjpwYXNz"},
+            "registry.example.com": {"identitytoken": "abc"},
+            "empty.example.com": {}
+        }}"#;
+        let accounts = parse_accounts(json);
+        assert_eq!(accounts.len(), 3);
+
+        let quay = accounts
+            .iter()
+            .find(|account| account.registry == "quay.io")
+            .expect("quay.io");
+        assert_eq!(quay.username, "user");
+        assert_eq!(quay.kind, AccountKind::Password);
+
+        let token = accounts
+            .iter()
+            .find(|account| account.registry == "registry.example.com")
+            .expect("token registry");
+        assert_eq!(token.kind, AccountKind::Token);
+        assert_eq!(token.username, "unknown");
+    }
+
+    #[test]
+    fn ignores_malformed_auth_files() {
+        assert!(parse_accounts("not json").is_empty());
+        assert!(parse_accounts("{}").is_empty());
+        assert!(parse_accounts(r#"{"auths":{}}"#).is_empty());
     }
 }
