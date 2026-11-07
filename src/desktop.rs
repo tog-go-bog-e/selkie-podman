@@ -116,23 +116,29 @@ fn request_activation(socket_path: &PathBuf) -> bool {
 }
 
 fn state_paths() -> (PathBuf, PathBuf) {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
+    // `$XDG_RUNTIME_DIR` is private to the user, so plain names are fine there.
+    // The temp directory is shared, so names there carry the uid: otherwise
+    // another user's lock file would stop this user from taking the lock.
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-
-    let mut lock = base.join("podman-desktop-rs.lock");
-    let mut socket = base.join("podman-desktop-rs.sock");
-    // Unix socket paths are limited to roughly 108 bytes; fall back to a short
-    // user-specific name if the runtime directory is too deep.
-    if socket.as_os_str().len() > 100 || lock.as_os_str().len() > 100 {
-        // SAFETY: `getuid` has no preconditions.
-        let uid = unsafe { libc::getuid() };
-        let fallback = std::env::temp_dir();
-        lock = fallback.join(format!("podman-desktop-rs-{uid}.lock"));
-        socket = fallback.join(format!("podman-desktop-rs-{uid}.sock"));
+        .map(PathBuf::from);
+    if let Some(base) = runtime {
+        let lock = base.join("podman-desktop-rs.lock");
+        let socket = base.join("podman-desktop-rs.sock");
+        // Unix socket paths are limited to roughly 108 bytes; fall back to the
+        // temp directory if the runtime directory is too deep.
+        if socket.as_os_str().len() <= 100 && lock.as_os_str().len() <= 100 {
+            return (lock, socket);
+        }
     }
-    (lock, socket)
+
+    // SAFETY: `getuid` has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let fallback = std::env::temp_dir();
+    (
+        fallback.join(format!("podman-desktop-rs-{uid}.lock")),
+        fallback.join(format!("podman-desktop-rs-{uid}.sock")),
+    )
 }
 
 /// Start the tray icon in the background and return its signal receiver.

@@ -49,6 +49,8 @@ use helpers::*;
 
 const TOAST_TTL: Duration = Duration::from_secs(5);
 const MAX_LOG_LINES: usize = 800;
+/// Most log lines applied in one UI update; the rest wait for the next tick.
+const LOG_BATCH: usize = 5_000;
 /// Lines fetched per compose `logs --tail` stream.
 const COMPOSE_LOG_TAIL: usize = 200;
 /// Extra lines fetched per "load older" request.
@@ -63,6 +65,10 @@ const ROW_HEIGHT: f32 = 46.0;
 /// `podman info` probes the store and network and takes seconds on some hosts,
 /// so the Dashboard data is cached and refreshed on demand or when stale.
 const DASHBOARD_TTL: Duration = Duration::from_secs(30);
+/// How long machine and connection lists are reused by background refreshes.
+/// `podman machine list` queries every VM and is slow on some hosts; it is
+/// re-read sooner on the Machines/Connections pages and after any action.
+const LOCAL_TTL: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub(crate) enum Tab {
@@ -659,10 +665,18 @@ impl Drop for OutputRun {
 #[cfg(target_os = "linux")]
 fn kill_with_parent(command: &mut Command) {
     use std::os::unix::process::CommandExt;
+    // If the app dies between fork and `prctl`, the signal is lost; checking
+    // the parent afterwards closes that window (as in `terminal.rs`).
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: runs in the forked child before exec; `prctl`, `getppid` and
+    // `_exit` are async-signal-safe.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
                 return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                libc::_exit(1);
             }
             Ok(())
         });
@@ -761,6 +775,8 @@ pub struct PodmanDesktop {
     dashboard: Option<Box<podman::Dashboard>>,
     dashboard_error: Option<String>,
     dashboard_fetched: Option<Instant>,
+    /// When machines and connections were last read (see [`LOCAL_TTL`]).
+    local_fetched: Option<Instant>,
 
     toasts: Vec<Toast>,
     next_toast_id: u64,
@@ -843,6 +859,7 @@ impl PodmanDesktop {
             dashboard: None,
             dashboard_error: None,
             dashboard_fetched: None,
+            local_fetched: None,
             toasts: Vec::new(),
             next_toast_id: 1,
         };
@@ -909,11 +926,16 @@ impl PodmanDesktop {
                 .dashboard_fetched
                 .is_none_or(|at| at.elapsed() >= DASHBOARD_TTL);
 
+        let want_local = matches!(self.tab, Tab::Machines | Tab::Connections)
+            || self
+                .local_fetched
+                .is_none_or(|at| at.elapsed() >= LOCAL_TTL);
+
         cx.spawn(async move |this, cx| {
             let (local, result, dashboard) = cx
                 .background_executor()
                 .spawn(async move {
-                    let local = podman::local_state();
+                    let local = want_local.then(podman::local_state);
                     let snapshot = podman::snapshot();
                     let dashboard = if want_dashboard {
                         Some(podman::dashboard())
@@ -927,7 +949,10 @@ impl PodmanDesktop {
                 this.loading = false;
                 // Machines and connections are local configuration and stay
                 // available even when the selected engine cannot be reached.
-                this.local = local;
+                if let Some(local) = local {
+                    this.local = local;
+                    this.local_fetched = Some(Instant::now());
+                }
                 if let Some(dashboard) = dashboard {
                     this.dashboard_fetched = Some(Instant::now());
                     match dashboard {
@@ -973,6 +998,7 @@ impl PodmanDesktop {
     /// Refresh, and re-read the Dashboard's slow `podman info`/`system df` data.
     pub(crate) fn refresh_dashboard(&mut self, cx: &mut Context<Self>) {
         self.dashboard_fetched = None;
+        self.local_fetched = None;
         self.refresh(cx);
     }
 
@@ -1597,26 +1623,43 @@ impl PodmanDesktop {
         }
         drop(sender);
 
+        // Drain everything that arrived since the last tick in one update and
+        // always yield afterwards: a large backlog or a chatty container must not
+        // keep the foreground executor busy line by line.
         let task = cx.spawn(async move |this, cx| loop {
-            match receiver.try_recv() {
-                Ok(line) => {
-                    if this
-                        .update(cx, |this, cx| {
-                            this.push_log(line);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
+            let mut lines = Vec::new();
+            let mut disconnected = false;
+            loop {
+                match receiver.try_recv() {
+                    Ok(line) => {
+                        lines.push(line);
+                        if lines.len() >= LOG_BATCH {
+                            break;
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        disconnected = true;
                         break;
                     }
                 }
-                Err(TryRecvError::Empty) => {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(60))
-                        .await
-                }
-                Err(TryRecvError::Disconnected) => break,
             }
+            if !lines.is_empty()
+                && this
+                    .update(cx, |this, cx| {
+                        this.push_logs(lines);
+                        cx.notify();
+                    })
+                    .is_err()
+            {
+                break;
+            }
+            if disconnected {
+                break;
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(60))
+                .await;
         });
 
         self.log_stream = Some(LogStream {
@@ -1684,8 +1727,9 @@ impl PodmanDesktop {
         self.stats_task = None;
     }
 
-    fn push_log(&mut self, line: String) {
-        self.logs.push(strip_ansi(&line));
+    fn push_logs(&mut self, lines: Vec<String>) {
+        self.logs.extend(lines.iter().map(|line| strip_ansi(line)));
+        // Trim once per batch; trimming per line is O(n) each time at the limit.
         if self.logs.len() > self.logs_limit {
             let excess = self.logs.len() - self.logs_limit;
             self.logs.drain(0..excess);
@@ -1987,6 +2031,8 @@ impl PodmanDesktop {
             self.toast(ToastKind::Error, run.failure.clone(), cx);
         }
 
+        // `machine init` and friends run here; re-read local state.
+        self.local_fetched = None;
         self.refresh(cx);
         cx.notify();
     }
@@ -2044,6 +2090,8 @@ impl PodmanDesktop {
             let result = cx.background_executor().spawn(async move { task() }).await;
             this.update(cx, |this, cx| {
                 this.busy = None;
+                // Any action may have changed a machine or connection.
+                this.local_fetched = None;
                 match result {
                     Ok(_) => {
                         this.toast(ToastKind::Success, success, cx);
@@ -2162,6 +2210,7 @@ impl PodmanDesktop {
                 ports,
                 env,
                 volumes,
+                command,
                 ..
             } => {
                 if !name.trim().is_empty() {
@@ -2175,6 +2224,7 @@ impl PodmanDesktop {
                     podman::parse_ports(ports).map(|_| ()),
                     podman::parse_env_vars(env).map(|_| ()),
                     podman::parse_volume_mounts(volumes).map(|_| ()),
+                    podman::parse_command_args(command).map(|_| ()),
                 ] {
                     if let Err(error) = result {
                         self.toast(ToastKind::Error, error, cx);
@@ -2442,7 +2492,7 @@ impl PodmanDesktop {
                     ports: podman::parse_ports(&ports).unwrap_or_default(),
                     env: podman::parse_env_vars(&env).unwrap_or_default(),
                     volumes: podman::parse_volume_mounts(&volumes).unwrap_or_default(),
-                    command: podman::parse_command_args(&command),
+                    command: podman::parse_command_args(&command).unwrap_or_default(),
                 };
                 match podman::container_run_command(&options) {
                     Ok(_) => {
@@ -3391,6 +3441,11 @@ mod tests {
     fn strips_ansi_sequences() {
         assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m text"), "red text");
         assert_eq!(strip_ansi("plain"), "plain");
+        assert_eq!(strip_ansi("\u{1b}]0;title\u{7}after"), "after");
+        assert_eq!(
+            strip_ansi("\u{1b}]8;;https://example.com\u{1b}\\link\u{1b}]8;;\u{1b}\\"),
+            "link"
+        );
     }
 
     #[test]
@@ -3401,5 +3456,19 @@ mod tests {
         assert_eq!(next_position(Some(2), 5, 1), Some(3));
         assert_eq!(next_position(Some(4), 5, 1), Some(4));
         assert_eq!(next_position(Some(0), 5, -1), Some(0));
+    }
+
+    #[test]
+    fn capped_line_reader_splits_long_lines() {
+        let input = format!("short\r\n{}\nend", "x".repeat(10));
+        let mut reader = std::io::BufReader::new(input.as_bytes());
+        assert_eq!(read_capped_line(&mut reader, 4).as_deref(), Some("shor"));
+        assert_eq!(read_capped_line(&mut reader, 64).as_deref(), Some("t"));
+        assert_eq!(
+            read_capped_line(&mut reader, 64).as_deref(),
+            Some("xxxxxxxxxx")
+        );
+        assert_eq!(read_capped_line(&mut reader, 64).as_deref(), Some("end"));
+        assert_eq!(read_capped_line(&mut reader, 64), None);
     }
 }

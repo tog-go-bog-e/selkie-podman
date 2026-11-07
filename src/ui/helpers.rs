@@ -319,13 +319,30 @@ pub(super) fn strip_ansi(input: &str) -> String {
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for next in chars.by_ref() {
-                    if ('@'..='~').contains(&next) {
-                        break;
+            match chars.peek() {
+                // CSI: parameters up to a final byte in `@`..=`~`.
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
                     }
                 }
+                // OSC (titles, hyperlinks): ends with BEL or ST (`ESC \`).
+                Some(']') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
             }
         } else {
             output.push(ch);
@@ -334,24 +351,33 @@ pub(super) fn strip_ansi(input: &str) -> String {
     output
 }
 
+/// Longest line forwarded in one piece. A stream without newlines (binary
+/// output, a progress bar redrawn with `\r`) is split at this length instead
+/// of growing one buffer without bound.
+pub(super) const MAX_LINE_BYTES: usize = 64 * 1024;
+
 pub(super) fn spawn_line_reader<R: Read + Send + 'static>(reader: R, sender: mpsc::Sender<String>) {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
-        let mut buffer = Vec::new();
-        loop {
-            buffer.clear();
-            match reader.read_until(b'\n', &mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let line = String::from_utf8_lossy(&buffer);
-                    let line = line.trim_end_matches(['\n', '\r']).to_string();
-                    if sender.send(line).is_err() {
-                        break;
-                    }
-                }
+        while let Some(line) = read_capped_line(&mut reader, MAX_LINE_BYTES) {
+            if sender.send(line).is_err() {
+                break;
             }
         }
     });
+}
+
+/// Read one line of at most `max` bytes, without the line ending. `None` at
+/// EOF or on a read error.
+pub(super) fn read_capped_line(reader: &mut impl BufRead, max: usize) -> Option<String> {
+    let mut buffer = Vec::new();
+    match reader.take(max as u64).read_until(b'\n', &mut buffer) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => {
+            let line = String::from_utf8_lossy(&buffer);
+            Some(line.trim_end_matches(['\n', '\r']).to_string())
+        }
+    }
 }
 
 pub(super) fn edit_text(text: &mut String, event: &KeyDownEvent, cx: &mut App) -> TextOutcome {

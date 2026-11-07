@@ -113,7 +113,8 @@ fn main() {
                     window.activate_window();
                 }
                 if refresh {
-                    view.refresh(cx);
+                    // An explicit refresh re-reads everything, cached data included.
+                    view.refresh_dashboard(cx);
                 }
                 // Blink the text caret at 2 Hz while an input is focused.
                 view.blink_caret(window, cx);

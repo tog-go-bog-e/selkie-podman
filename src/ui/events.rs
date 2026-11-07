@@ -13,6 +13,8 @@ const EVENT_COALESCE: Duration = Duration::from_millis(300);
 const EVENT_MAX_WAIT: Duration = Duration::from_secs(1);
 /// Delay before restarting the stream after it ends or fails to start.
 const EVENT_RETRY: Duration = Duration::from_secs(3);
+/// How long a quiet stream must stay up before it counts as connected.
+const EVENT_CONNECTED_AFTER: Duration = Duration::from_secs(2);
 
 /// Kills the `podman events` client when the supervisor task is cancelled.
 struct EventChild(Option<Child>);
@@ -74,12 +76,11 @@ impl PodmanDesktop {
                 }
             };
 
-            if this
-                .update(cx, |this, cx| this.set_events_connected(true, cx))
-                .is_err()
-            {
-                break;
-            }
+            // A client that cannot reach the engine exits right away; only
+            // report "connected" once the stream has stayed up for a moment or
+            // delivered an event, so a dead engine does not flicker the status.
+            let started = Instant::now();
+            let mut reported = false;
 
             let (sender, receiver) = mpsc::channel::<String>();
             if let Some(stdout) = child.stdout.take() {
@@ -95,6 +96,15 @@ impl PodmanDesktop {
                     loop {
                         match receiver.try_recv() {
                             Ok(line) => {
+                                if !reported {
+                                    reported = true;
+                                    if this
+                                        .update(cx, |this, cx| this.set_events_connected(true, cx))
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
                                 if is_ignored_event(&line) {
                                     continue;
                                 }
@@ -124,6 +134,15 @@ impl PodmanDesktop {
 
                 if disconnected {
                     break;
+                }
+                if !reported && started.elapsed() >= EVENT_CONNECTED_AFTER {
+                    reported = true;
+                    if this
+                        .update(cx, |this, cx| this.set_events_connected(true, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
                 cx.background_executor()
                     .timer(Duration::from_millis(100))

@@ -299,7 +299,8 @@ the **Connections** tab to make this app talk to the VM.
 - Runs use `podman run -d` with optional `--name`, repeated `-p`/`-e`/`-v` and a
   command appended after the image. Name, port mappings (`host:container[/proto]`),
   environment entries (`KEY=VALUE`) and mounts (`source:destination[:options]`)
-  are validated; space-separated lists are split without shell quoting. The
+  are validated; space-separated lists are split without shell quoting, while
+  the command accepts shell-style `'…'`/`"…"` quoting and `\` escapes. The
   container is left detached so it appears in the list and can be opened in the
   Terminal tab.
 - Builds run `podman build -f <Containerfile> -t <tag>`, followed by
@@ -448,8 +449,7 @@ prioritized next milestones and verification checklist.
   multi-arch manifest push. Passwords are masked in the dialog and passed via
   stdin, but stay in memory until the command finishes.
 - Running an image always detaches (`podman run -d`); there is no interactive
-  run or attach mode, and the command/args are split on whitespace without
-  shell-style quoting. Restart policies, resource limits, networks, user and
+  run or attach mode. Restart policies, resource limits, networks, user and
   privileged options are not exposed yet.
 - Builds default to the Containerfile's directory as context and accept an
   optional context, `--platform` and whitespace-separated `--build-arg` entries.

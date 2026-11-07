@@ -224,12 +224,33 @@ pub fn save(settings: &Settings) {
     let Some(path) = settings_path() else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     if let Ok(contents) = serde_json::to_string_pretty(settings) {
-        let _ = std::fs::write(path, contents);
+        let _ = write_atomically(&path, contents.as_bytes());
     }
+}
+
+/// Write `contents` to a sibling temp file and rename it over `path`, so a
+/// crash mid-write leaves the previous settings intact instead of a truncated
+/// file that `load` would silently replace with defaults.
+fn write_atomically(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    let result = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 /// Where `settings.json` lives, when the environment provides a config dir.
@@ -334,5 +355,20 @@ mod tests {
             clamp_panel_width(512.0, DETAILS_MIN_WIDTH, DETAILS_MAX_WIDTH, 400.0),
             512.0
         );
+    }
+
+    #[test]
+    fn atomic_write_replaces_the_file_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!(
+            "pd-rs-settings-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = dir.join("nested/settings.json");
+        write_atomically(&path, b"{\"a\":1}").expect("first write");
+        write_atomically(&path, b"{\"a\":2}").expect("second write");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"a\":2}");
+        assert!(!dir.join("nested/settings.json.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
