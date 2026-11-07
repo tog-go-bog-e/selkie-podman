@@ -31,6 +31,9 @@ pub struct Settings {
     pub theme: ThemeKind,
     #[serde(default)]
     pub tab: Tab,
+    /// Section shown inside the Settings page.
+    #[serde(default)]
+    pub settings_section: SettingsSection,
     #[serde(default = "default_refresh")]
     pub refresh_secs: u64,
     #[serde(default = "default_log_window")]
@@ -47,6 +50,44 @@ pub struct Settings {
     /// default (usually the local engine).
     #[serde(default)]
     pub connection: Option<String>,
+}
+
+/// Panes inside the Settings page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SettingsSection {
+    #[default]
+    Registries,
+    Appearance,
+    Engine,
+    About,
+}
+
+impl SettingsSection {
+    pub const ALL: [SettingsSection; 4] = [
+        SettingsSection::Registries,
+        SettingsSection::Appearance,
+        SettingsSection::Engine,
+        SettingsSection::About,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsSection::Registries => "Registries",
+            SettingsSection::Appearance => "Appearance",
+            SettingsSection::Engine => "Engine",
+            SettingsSection::About => "About",
+        }
+    }
+
+    /// Stable element id for the sub-navigation entry.
+    pub fn id(self) -> &'static str {
+        match self {
+            SettingsSection::Registries => "settings-nav-registries",
+            SettingsSection::Appearance => "settings-nav-appearance",
+            SettingsSection::Engine => "settings-nav-engine",
+            SettingsSection::About => "settings-nav-about",
+        }
+    }
 }
 
 /// Last known window size, in logical pixels.
@@ -67,6 +108,7 @@ impl Default for Settings {
         Self {
             theme: ThemeKind::Dark,
             tab: Tab::Containers,
+            settings_section: SettingsSection::default(),
             refresh_secs: default_refresh(),
             log_window: default_log_window(),
             sidebar_width: default_sidebar_width(),

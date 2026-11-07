@@ -1953,9 +1953,11 @@ pub enum AccountKind {
 }
 
 impl AccountKind {
-    pub fn label(self) -> &'static str {
+    /// What the PASSWORD column shows: a mask for stored passwords, and the
+    /// word itself for token-based entries (there is no password to hide).
+    pub fn masked(self) -> &'static str {
         match self {
-            AccountKind::Password => "password",
+            AccountKind::Password => "••••••••",
             AccountKind::Token => "token",
         }
     }

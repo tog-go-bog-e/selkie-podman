@@ -519,6 +519,12 @@ struct ContextMenuState {
     selection: Selection,
 }
 
+/// The `⋮` menu shown on a credential row.
+struct AccountMenuState {
+    position: Point<Pixels>,
+    registry: String,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SortState {
     column: usize,
@@ -709,6 +715,8 @@ pub struct PodmanDesktop {
 
     context_menu: Option<ContextMenuState>,
 
+    account_menu: Option<AccountMenuState>,
+
     logs: Vec<String>,
     logs_follow: bool,
     logs_handle: ScrollHandle,
@@ -801,6 +809,7 @@ impl PodmanDesktop {
             file_view: None,
 
             context_menu: None,
+            account_menu: None,
             logs: Vec::new(),
             logs_follow: true,
             logs_handle: ScrollHandle::new(),
@@ -866,6 +875,7 @@ impl PodmanDesktop {
         })
         .detach();
 
+        view.load_accounts();
         view
     }
 
@@ -876,7 +886,10 @@ impl PodmanDesktop {
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         // Login and logout run through the output panel and end in a refresh, so
         // the credential list follows them.
-        if self.tab == Tab::Accounts {
+        let registries_visible = self.tab == Tab::Accounts
+            || (self.tab == Tab::Settings
+                && self.settings.settings_section == settings::SettingsSection::Registries);
+        if registries_visible {
             self.load_accounts();
         }
         if self.loading {
@@ -1033,7 +1046,9 @@ impl PodmanDesktop {
 
         match key {
             "escape" => {
-                if self.context_menu.is_some() {
+                if self.account_menu.is_some() {
+                    self.close_account_menu(cx);
+                } else if self.context_menu.is_some() {
                     self.close_context_menu(cx);
                 } else if self.selection.is_some() {
                     self.clear_selection();
@@ -3148,7 +3163,7 @@ impl PodmanDesktop {
             };
         }
         if self.tab == Tab::Settings {
-            return "appearance, refresh, panels and engine details".to_string();
+            return "configuration, registries and engine details".to_string();
         }
         if self.tab == Tab::Accounts {
             let count = self.accounts.len();
@@ -3244,7 +3259,7 @@ impl Render for PodmanDesktop {
             .child(self.header(cx));
         column = match self.tab {
             Tab::Dashboard => column.child(self.dashboard_view()),
-            Tab::Accounts => column.child(self.accounts_view(cx)),
+            Tab::Accounts => column.child(self.registries_view(cx)),
             Tab::Settings => column.child(self.settings_view(cx)),
             _ => column
                 .child(self.toolbar(window, cx))
@@ -3299,6 +3314,9 @@ impl Render for PodmanDesktop {
         }
         if self.context_menu.is_some() {
             root = root.child(self.context_menu_view(cx));
+        }
+        if self.account_menu.is_some() {
+            root = root.child(self.account_menu_view(cx));
         }
 
         root

@@ -96,11 +96,13 @@ Current scope: **manage containers and images on the local Podman engine**.
   confirms and `Esc` cancels.
 - **Themes and settings**: dark, light and high-contrast themes; theme, active
   tab, refresh interval, log window and window size all persist across restarts.
-  The **Settings** page holds appearance, refresh, log window, panel widths and
-  engine information.
-- **Accounts**: the **Accounts** page lists every registry Podman has credentials
-  for (read from its auth files), with the username and whether it stores a
-  password or a token; log in or out from there without leaving the app.
+  **Settings** is split into `Registries`, `Appearance`, `Engine` and `About`,
+  mirroring the upstream layout.
+- **Accounts**: the **Accounts** page shows the same registry table as
+  `Settings → Registries` — every registry Podman has credentials for (read from
+  its auth files), with the username and a masked password (or `token`), a `⋮`
+  menu with **Log out**, **Add registry**, and one-click **Configure** buttons for
+  Docker Hub, Red Hat Quay, GitHub and Google Container Registry.
 - **Desktop integration**: a system tray icon (Show window / Refresh / Quit), a
   single-instance lock so re-launching focuses the running app, and window size
   (plus maximized state) restored on startup.
@@ -354,15 +356,15 @@ Settings live in `$XDG_CONFIG_HOME/podman-desktop-rs/settings.json`, falling bac
 to `~/.config/podman-desktop-rs/settings.json`, and are saved whenever they
 change:
 
-- **Theme** — Dark / Light / High contrast on the **Settings** page.
-- **Auto refresh** — 3 / 5 / 10 / 30 seconds on the **Settings** page; used as the
-  fallback poll when the `podman events` stream is unavailable or quiet.
-- **Log window** — 5m / 10m / 30m / 1h on the **Settings** page or via the
+- **Theme** — Dark / Light / High contrast in **Settings → Appearance**.
+- **Auto refresh** — 3 / 5 / 10 / 30 seconds in **Settings → Appearance**; used as
+  the fallback poll when the `podman events` stream is unavailable or quiet.
+- **Log window** — 5m / 10m / 30m / 1h in **Settings → Appearance** or via the
   `last …` button in the log toolbar; passed to `podman logs --since`.
-- **Active tab** — restored on the next launch.
+- **Active tab and Settings pane** — restored on the next launch.
 - **Sidebar and details widths** — set by dragging the dividers, saved on
-  release, double-click to reset (or **Reset** on the Settings page); clamped on
-  load and when the window shrinks.
+  release, double-click to reset (or **Reset** in Settings → Appearance);
+  clamped on load and when the window shrinks.
 - **Window size and maximized state** — recorded every 500 ms when they change,
   and on close.
 - **Connection** — the Podman connection (or the local default) used for every

@@ -78,6 +78,7 @@ impl PodmanDesktop {
                     this.settings.tab = tab;
                     this.settings.save();
                     this.search.clear();
+                    this.account_menu = None;
                     this.clear_selection();
                     // The Dashboard data is only fetched while it is visible.
                     if tab == Tab::Dashboard {

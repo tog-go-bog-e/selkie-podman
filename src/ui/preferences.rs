@@ -1,5 +1,9 @@
+use gpui::Stateful;
+
 use super::helpers::*;
-use super::settings::{default_details_width, default_sidebar_width, LOG_WINDOWS, REFRESH_OPTIONS};
+use super::settings::{
+    default_details_width, default_sidebar_width, SettingsSection, LOG_WINDOWS, REFRESH_OPTIONS,
+};
 use super::theme::{current_kind, ThemeKind};
 use super::*;
 
@@ -8,19 +12,84 @@ impl PodmanDesktop {
     // Settings page
     // -----------------------------------------------------------------------
 
+    /// Settings is a sub-navigation plus the selected pane, mirroring the
+    /// upstream layout.
     pub(super) fn settings_view(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = div()
-            .id("settings")
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .px_6()
-            .pb_6()
+        let mut nav = div()
+            .w(px(180.))
+            .flex_shrink_0()
             .flex()
             .flex_col()
-            .gap_3();
+            .gap_1()
+            .px_3()
+            .pt_4()
+            .border_r_1()
+            .border_color(rgb(theme().border));
 
-        // Appearance
+        for section in SettingsSection::ALL {
+            nav = nav.child(self.settings_nav_item(section, cx));
+        }
+
+        let pane = match self.settings.settings_section {
+            SettingsSection::Registries => self.registries_view(cx),
+            SettingsSection::Appearance => self.appearance_view(cx),
+            SettingsSection::Engine => self.engine_view(cx),
+            SettingsSection::About => self.about_view(),
+        };
+
+        div()
+            .flex()
+            .flex_1()
+            .min_h(px(0.))
+            .child(nav)
+            .child(pane)
+            .into_any_element()
+    }
+
+    fn settings_nav_item(
+        &self,
+        section: SettingsSection,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active = self.settings.settings_section == section;
+
+        div()
+            .id(section.id())
+            .flex()
+            .items_center()
+            .h(px(34.))
+            .px_3()
+            .rounded_md()
+            .cursor_pointer()
+            .when(active, |el| el.bg(rgb(theme().accent_soft)))
+            .when(!active, |el| {
+                el.hover(|style| style.bg(rgb(theme().hover_bg)))
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.settings.settings_section != section {
+                    this.settings.settings_section = section;
+                    this.settings.save();
+                    if section == SettingsSection::Registries {
+                        this.load_accounts();
+                    }
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(if active {
+                        rgb(theme().accent)
+                    } else {
+                        rgb(theme().text)
+                    })
+                    .child(section.label()),
+            )
+    }
+
+    fn appearance_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut content = self.section_container("settings-appearance");
+
         let mut theme_options = Vec::new();
         for kind in [ThemeKind::Dark, ThemeKind::Light, ThemeKind::HighContrast] {
             theme_options.push(
@@ -58,7 +127,7 @@ impl PodmanDesktop {
             );
         }
 
-        content = content.child(section_title("APPEARANCE")).child(panel(vec![
+        content = content.child(panel(vec![
             option_row(
                 "Theme",
                 "Colour palette for every view".to_string(),
@@ -76,7 +145,6 @@ impl PodmanDesktop {
             ),
         ]));
 
-        // Panels
         content = content.child(section_title("PANELS")).child(panel(vec![
             option_row(
                 "Sidebar width",
@@ -110,14 +178,17 @@ impl PodmanDesktop {
             ),
         ]));
 
-        // Engine
+        content.into_any_element()
+    }
+
+    fn engine_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let connection = match &self.settings.connection {
             Some(name) => name.clone(),
             None => "local default".to_string(),
         };
-        let mut engine_controls = Vec::new();
+        let mut controls = Vec::new();
         if self.settings.connection.is_some() {
-            engine_controls.push(
+            controls.push(
                 small_button(
                     "settings-use-default-engine",
                     "Use Podman default",
@@ -127,15 +198,32 @@ impl PodmanDesktop {
                 .into_any_element(),
             );
         }
-        content = content
-            .child(section_title("ENGINE"))
+        let running = self
+            .local
+            .machines
+            .iter()
+            .filter(|item| item.running)
+            .count();
+
+        let content = self.section_container("settings-engine");
+        content
             .child(panel(vec![option_row(
                 "Connection",
-                format!("{connection} · manage them in Connections"),
-                engine_controls,
-            )]));
+                format!("{connection} · switch in the Connections tab"),
+                controls,
+            )]))
+            .child(section_title("RESOURCES"))
+            .child(panel(vec![
+                about_row(
+                    "Machines",
+                    format!("{} · {running} running", self.local.machines.len()),
+                ),
+                about_row("Connections", self.local.connections.len().to_string()),
+            ]))
+            .into_any_element()
+    }
 
-        // About
+    fn about_view(&self) -> AnyElement {
         let settings_path = super::settings::path()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "not writable".to_string());
@@ -144,17 +232,39 @@ impl PodmanDesktop {
         } else {
             self.snapshot.version.clone()
         };
-        content = content.child(section_title("ABOUT")).child(panel(vec![
-            about_row("Version", env!("CARGO_PKG_VERSION").to_string()),
-            about_row("Podman", podman),
-            about_row("Settings file", settings_path),
-            about_row("Renderer", "gpui · experimental".to_string()),
-        ]));
 
-        content.into_any_element()
+        self.section_container("settings-about")
+            .child(panel(vec![
+                about_row("Version", env!("CARGO_PKG_VERSION").to_string()),
+                about_row("Podman", podman),
+                about_row("Settings file", settings_path),
+                about_row("Renderer", "gpui · experimental".to_string()),
+            ]))
+            .into_any_element()
     }
 
-    /// Switch palette without persisting through the cycle helper.
+    /// Scrollable pane with the section title on top.
+    fn section_container(&self, id: &'static str) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .px_6()
+            .pb_6()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .mt_4()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(self.settings.settings_section.label()),
+            )
+    }
+
+    /// Switch palette without persisting through a cycle helper.
     fn set_theme(&mut self, kind: ThemeKind, cx: &mut Context<Self>) {
         if current_kind() == kind {
             return;
