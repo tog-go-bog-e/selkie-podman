@@ -36,7 +36,11 @@ impl vt100::Callbacks for TerminalEvents {
 
 /// One interactive client attached through a pseudo-terminal.
 pub struct TerminalSession {
+    /// Kept for `TIOCSWINSZ`; input goes through `writer`.
     master: Option<File>,
+    /// Feeds the writer thread. Writes can block when the client stops reading
+    /// (a large paste), so they never run on the UI thread.
+    writer: Option<mpsc::Sender<Vec<u8>>>,
     stop: Arc<AtomicBool>,
     child: Option<Child>,
     parser: vt100::Parser<TerminalEvents>,
@@ -46,6 +50,8 @@ pub struct TerminalSession {
     receiver: Receiver<Vec<u8>>,
     /// Set when the exec session has ended (shell exit, error or engine loss).
     pub closed: bool,
+    /// The client's exit code once it has been reaped.
+    pub exit_code: Option<i32>,
 }
 
 impl TerminalSession {
@@ -75,6 +81,17 @@ impl TerminalSession {
                 "could not allocate a pseudo-terminal: {}",
                 std::io::Error::last_os_error()
             ));
+        }
+        // `openpty` descriptors are inherited across exec. Mark both
+        // close-on-exec right away so neither the client (which must hold only
+        // the slave, through 0/1/2) nor any podman process spawned concurrently
+        // by another thread keeps a copy. A leaked master copy would stop the
+        // shell from ever seeing a hangup when the session is dropped.
+        // `dup2` in `pre_exec` clears the flag on the new 0/1/2.
+        // SAFETY: both descriptors were just returned by `openpty`.
+        unsafe {
+            libc::fcntl(master_fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            libc::fcntl(slave_fd, libc::F_SETFD, libc::FD_CLOEXEC);
         }
 
         command
@@ -131,15 +148,16 @@ impl TerminalSession {
         // SAFETY: `master_fd`/`slave_fd` are owned by this function at this point.
         let master = unsafe {
             libc::close(slave_fd);
-            libc::fcntl(master_fd, libc::F_SETFD, libc::FD_CLOEXEC);
             File::from_raw_fd(master_fd)
         };
 
         // The reader uses a duplicate so it can exit when asked without fighting
-        // the writer. `O_NONBLOCK` is shared by both descriptions, which is fine:
-        // the reader polls and writes are tiny.
-        // SAFETY: `master` is a valid descriptor; `dup` returns a new one.
-        let reader_fd = unsafe { libc::dup(master.as_raw_fd()) };
+        // the writer. The descriptor stays blocking (`O_NONBLOCK` would be
+        // shared with the writer and truncate large pastes); the reader waits
+        // with `poll` and a timeout so it still notices the stop flag.
+        // SAFETY: `master` is a valid descriptor; `F_DUPFD_CLOEXEC` returns a
+        // new close-on-exec one.
+        let reader_fd = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
         if reader_fd < 0 {
             let mut child = child;
             let _ = child.kill();
@@ -151,10 +169,37 @@ impl TerminalSession {
         }
         // SAFETY: `reader_fd` is a freshly duplicated descriptor we own.
         let reader = unsafe { File::from_raw_fd(reader_fd) };
-        // SAFETY: valid descriptor; sets the non-blocking flag.
-        unsafe {
-            let flags = libc::fcntl(reader_fd, libc::F_GETFL);
-            libc::fcntl(reader_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+
+        // SAFETY: `master` is valid; the duplicate is close-on-exec.
+        let writer_fd = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        if writer_fd < 0 {
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "could not duplicate the pseudo-terminal: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: `writer_fd` is a freshly duplicated descriptor we own.
+        let mut writer_file = unsafe { File::from_raw_fd(writer_fd) };
+        let (writer, input) = mpsc::channel::<Vec<u8>>();
+        let mut child = child;
+        let spawned = std::thread::Builder::new()
+            .name("terminal-input".into())
+            .spawn(move || {
+                // Ends when the session drops its sender, or on a write error
+                // (the client is gone).
+                while let Ok(bytes) = input.recv() {
+                    if writer_file.write_all(&bytes).is_err() {
+                        break;
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("could not start the terminal writer: {error}"));
         }
 
         let stop = Arc::new(AtomicBool::new(false));
@@ -172,6 +217,25 @@ impl TerminalSession {
                     if reader_stop.load(Ordering::Relaxed) {
                         break;
                     }
+                    let mut pollfd = libc::pollfd {
+                        fd: reader.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    // SAFETY: one valid pollfd; 100 ms timeout.
+                    let ready = unsafe { libc::poll(&mut pollfd, 1, 100) };
+                    if ready == 0 {
+                        continue;
+                    }
+                    if ready < 0 {
+                        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                        {
+                            continue;
+                        }
+                        break;
+                    }
+                    // POLLHUP/POLLERR fall through to `read`, which then reports
+                    // EOF or EIO and ends the loop after any remaining output.
                     match (&reader).read(&mut buffer) {
                         Ok(0) => break,
                         Ok(read) => {
@@ -180,9 +244,6 @@ impl TerminalSession {
                             }
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
                         // EIO is the normal outcome once the child exits.
                         Err(_) => break,
                     }
@@ -192,6 +253,7 @@ impl TerminalSession {
 
         Ok(Self {
             master: Some(master),
+            writer: Some(writer),
             stop,
             child: Some(child),
             parser: vt100::Parser::new_with_callbacks(
@@ -205,6 +267,7 @@ impl TerminalSession {
             cols,
             receiver,
             closed: false,
+            exit_code: None,
         })
     }
 
@@ -318,10 +381,8 @@ impl TerminalSession {
     }
 
     pub fn write(&self, bytes: &[u8]) {
-        if let Some(master) = &self.master {
-            let mut master = master;
-            let _ = master.write_all(bytes);
-            let _ = master.flush();
+        if let Some(writer) = &self.writer {
+            let _ = writer.send(bytes.to_vec());
         }
     }
 
@@ -343,12 +404,15 @@ impl TerminalSession {
         }
 
         // Always try to reap the client: it may exit before or after the reader
-        // sees EOF, and a missed wait leaves a zombie behind.
+        // sees EOF, and a missed wait leaves a zombie behind. Exit alone does
+        // not close the session: output the reader has not forwarded yet (a
+        // quick `podman exec` error, say) would be lost. The session closes
+        // when the reader hits EOF/EIO and its channel disconnects.
         if let Some(mut child) = self.child.take() {
             match child.try_wait() {
-                Ok(Some(_status)) => self.closed = true,
                 Ok(None) => self.child = Some(child),
-                Err(_) => self.closed = true,
+                Ok(Some(status)) => self.exit_code = status.code(),
+                Err(_) => {}
             }
         }
 
@@ -361,6 +425,7 @@ impl Drop for TerminalSession {
         // Close the PTY first: the shell sees a hangup and the `podman exec`
         // client can exit cleanly (killing it leaves a stale conmon behind).
         self.stop.store(true, Ordering::Relaxed);
+        self.writer.take();
         self.master.take();
 
         if let Some(mut child) = self.child.take() {
@@ -375,5 +440,72 @@ impl Drop for TerminalSession {
                 let _ = child.wait();
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// Run `script` in a session and return the screen text once it closes.
+    fn run_to_close(script: &str) -> TerminalSession {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        let mut session = TerminalSession::start(command, 24, 120).expect("session");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.closed {
+            assert!(Instant::now() < deadline, "session did not close");
+            session.drain();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Let the reap happen if the reader finished first.
+        for _ in 0..100 {
+            if session.exit_code.is_some() {
+                break;
+            }
+            session.drain();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        session
+    }
+
+    #[test]
+    fn client_does_not_inherit_the_master() {
+        let session = run_to_close("ls -l /proc/$$/fd");
+        let text = session.screen().contents();
+        assert!(text.contains("/dev/pts/"), "listing missing: {text}");
+        assert!(
+            !text.contains("ptmx"),
+            "master leaked into the client: {text}"
+        );
+    }
+
+    #[test]
+    fn keeps_final_output_and_exit_code() {
+        let session = run_to_close("printf 'last words'; exit 127");
+        assert!(session.screen().contents().contains("last words"));
+        assert_eq!(session.exit_code, Some(127));
+    }
+
+    #[test]
+    fn large_input_is_delivered_in_full() {
+        let mut command = Command::new("sh");
+        // Raw mode so the line discipline does not cap or echo the input.
+        command.args(["-c", "stty raw -echo; head -c 200000 | wc -c; sleep 0.2"]);
+        let mut session = TerminalSession::start(command, 24, 80).expect("session");
+        std::thread::sleep(Duration::from_millis(300));
+        session.write(&vec![b'a'; 200_000]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.closed {
+            assert!(Instant::now() < deadline, "session did not close");
+            session.drain();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            session.screen().contents().contains("200000"),
+            "{}",
+            session.screen().contents()
+        );
     }
 }

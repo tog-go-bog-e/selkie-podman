@@ -9,6 +9,9 @@ use super::helpers::*;
 use super::*;
 use crate::terminal::{TerminalSession, TERMINAL_COLS, TERMINAL_ROWS};
 
+/// Exit code of `podman exec` when the requested executable does not exist.
+const NO_SHELL_EXIT: i32 = 127;
+
 /// Height of one terminal row, in logical pixels.
 const LINE_HEIGHT: f32 = 18.0;
 /// Size of the terminal font, in logical pixels.
@@ -206,8 +209,18 @@ impl PodmanDesktop {
         let mut view = div().flex_1().min_h(px(0.)).flex().flex_col();
 
         let closed = self.terminal.as_ref().is_some_and(|session| session.closed);
+        // `podman exec` exits with 127 when the executable is missing: the
+        // image has no `/bin/sh` (distroless, scratch).
+        let no_shell = closed
+            && matches!(self.terminal_target, Some(TerminalTarget::Container(_)))
+            && self
+                .terminal
+                .as_ref()
+                .is_some_and(|session| session.exit_code == Some(NO_SHELL_EXIT));
         let status = if self.terminal_error.is_some() {
             "error"
+        } else if no_shell {
+            "session ended: this image has no /bin/sh"
         } else if closed {
             "session ended"
         } else {
