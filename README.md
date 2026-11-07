@@ -254,10 +254,19 @@ the **Connections** tab to make this app talk to the VM.
   All commands use argument arrays (no shell), and user-supplied image
   references, names, port mappings, env entries and mounts are validated before
   being passed through. Compose projects are derived from the labels on
-  `podman ps` rather than from a separate state file.
-- `src/ui.rs` holds the `PodmanDesktop` entity: shared state, polling, selection
-  and action plumbing. Rendering is split by concern (all `impl PodmanDesktop`
-  or shared helpers, reusing the state in `ui.rs`):
+  `podman ps` rather than from a separate state file. The client is split by
+  area under `src/podman/` (`exec` for running commands and the selected
+  connection, then `containers`, `images`, `compose`, `resources` for pods,
+  volumes and networks, `machines`, `registry`, `system` and `util`), all
+  re-exported from `src/podman.rs`.
+- `src/ui.rs` holds the `PodmanDesktop` entity: shared state, the constructor
+  and the render entry point. Behaviour and rendering are split by concern
+  (all `impl PodmanDesktop` or shared helpers, reusing the state in `ui.rs`):
+  - `src/ui/loading.rs` — snapshot loading and the refresh cycle
+  - `src/ui/navigation.rs` — keyboard navigation and the row context menu
+  - `src/ui/selection.rs` — selection, details data, log streams, stats, actions
+  - `src/ui/modals.rs` — opening and submitting modal dialogs
+  - `src/ui/search.rs` / `src/ui/sorting.rs` — table search and column sorting
   - `src/ui/sidebar.rs` — navigation, engine status, Accounts/Settings entries
   - `src/ui/dashboard.rs` — resource cards, disk usage and engine details
   - `src/ui/accounts.rs` — registry credentials read from Podman's auth files
@@ -265,7 +274,7 @@ the **Connections** tab to make this app talk to the VM.
   - `src/ui/table.rs` — toolbars, search field, sortable headers and table bodies
   - `src/ui/rows.rs` — all row builders and hover action buttons
   - `src/ui/compose.rs` — compose project summary and actions
-  - `src/ui/output.rs` — shared streamed-output panel for compose actions and builds
+  - `src/ui/output.rs` — streamed-output runner and panel for compose actions and builds
   - `src/ui/engines.rs` — machine and connection summaries and actions
   - `src/ui/details.rs` — inspect panes and the streaming log viewer
   - `src/ui/dialogs.rs` — status bar, toasts, context menus, confirm modals
