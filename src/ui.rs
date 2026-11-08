@@ -345,8 +345,8 @@ enum RunField {
 }
 
 impl RunField {
-    /// Fields shown in the Run dialog. Docker has no standalone secrets, so the
-    /// Secrets row is omitted there.
+    /// Fields shown in the Run dialog. API engines have no standalone secrets,
+    /// so the Secrets row is omitted there.
     fn fields() -> Vec<RunField> {
         let mut fields = vec![
             RunField::Name,
@@ -354,7 +354,7 @@ impl RunField {
             RunField::Env,
             RunField::Volumes,
         ];
-        if !podman::is_docker() {
+        if podman::has_secrets() {
             fields.push(RunField::Secrets);
         }
         fields.push(RunField::Command);

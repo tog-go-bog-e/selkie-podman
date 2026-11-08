@@ -318,6 +318,9 @@ impl Selkie {
                                                 (EngineKind::Podman, None) => {
                                                     "local default".to_string()
                                                 }
+                                                (EngineKind::PodmanApi, _) => {
+                                                    "Podman API".to_string()
+                                                }
                                                 (EngineKind::Docker, _) => "Docker API".to_string(),
                                             }),
                                     ),

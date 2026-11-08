@@ -15,10 +15,15 @@ pub struct Snapshot {
     pub compose: Vec<ComposeProject>,
 }
 
+/// The endpoint the current API engine talks to (shown in Settings).
+pub fn api_endpoint() -> String {
+    api::api_endpoint()
+}
+
 /// Fetch the engine version, all images and all containers.
 pub fn snapshot() -> Result<Snapshot, String> {
-    if engine::is_docker() {
-        return docker::snapshot();
+    if engine::uses_api() {
+        return api::snapshot();
     }
 
     let version = query(&["--version"])?.trim().to_string();
@@ -144,8 +149,8 @@ pub struct Dashboard {
 }
 
 pub fn dashboard() -> Result<Dashboard, String> {
-    if engine::is_docker() {
-        return docker::dashboard();
+    if engine::uses_api() {
+        return api::dashboard();
     }
 
     Ok(Dashboard {

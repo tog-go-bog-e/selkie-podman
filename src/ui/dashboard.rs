@@ -122,6 +122,7 @@ impl Selkie {
             let info = &data.info;
             let connection = match (podman::engine(), &self.settings.connection) {
                 (EngineKind::Docker, _) => "Docker API".to_string(),
+                (EngineKind::PodmanApi, _) => "Podman API".to_string(),
                 (EngineKind::Podman, Some(name)) => name.clone(),
                 (EngineKind::Podman, None) => "Podman default".to_string(),
             };

@@ -102,12 +102,12 @@ impl Selkie {
         self.settings.engine = kind;
         self.settings.save();
         podman::set_engine(kind);
-        // Docker ignores Podman's connection setting; clear or restore the
-        // runtime value so switching back to Podman targets the saved connection.
-        if kind == EngineKind::Docker {
-            podman::set_connection(None);
-        } else {
+        // Podman's named connections only exist for the CLI engine; clear or
+        // restore the runtime value so switching back targets the saved one.
+        if kind == EngineKind::Podman {
             podman::set_connection(self.settings.connection.clone());
+        } else {
+            podman::set_connection(None);
         }
         // Also falls back from a Podman-only view.
         self.reset_engine(cx);

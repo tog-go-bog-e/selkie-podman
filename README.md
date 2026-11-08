@@ -13,15 +13,19 @@ engine**.
 
 ## Features
 
-- **Engines**: choose **Podman** (default) or **Docker** under
-  `Settings → Engine`. Podman keeps using its CLI, so every Podman version that
-  prints `--format json` works. Docker is reached through its HTTP API with
-  [`bollard`](https://docs.rs/bollard), so the Docker socket is used directly.
+- **Engines**: choose **Podman** (default), **Podman (API)** or **Docker**
+  under `Settings → Engine`. Podman keeps using its CLI, so every Podman version
+  that prints `--format json` works. Podman (API) and Docker are reached through
+  their HTTP API with [`bollard`](https://docs.rs/bollard), so their sockets are
+  used directly. Podman (API) needs the Podman socket (`$XDG_RUNTIME_DIR/podman/
+  podman.sock` for rootless, `/run/podman/podman.sock` for rootful, or
+  `CONTAINER_HOST`); enable it with `systemctl --user enable --now podman.socket`.
   Docker has no pods, standalone secrets, machines or Podman-style named
-  connections; those views are hidden when Docker is selected, and the Run
-  dialog's Secrets field is omitted. The Docker CLI is still used for commands
-  that stream a child process (logs, the interactive terminal, compose, build,
-  pull/push and registry login).
+  connections, and Podman's Docker-compatible API has no pods, secrets, machines
+  or connections; those views are hidden for both API engines, and the Run
+  dialog's Secrets field is omitted. The `podman` / `docker` CLI is still used for
+  commands that stream a child process (logs, the interactive terminal, compose,
+  build, pull/push and registry login).
 - **Dashboard**: a landing overview with resource counts (containers running and
   total, images, pods, volumes, networks, machines), **disk usage** from
   `podman system df` (size and reclaimable space for images, containers and
@@ -160,8 +164,12 @@ engine**.
 
 - Rust 1.85+ (tested with 1.92)
 - Podman in `PATH` (tested with 5.4), **or** Docker Engine reachable through its
-  socket (`DOCKER_HOST` is honoured). The Docker CLI is needed for the
+  socket (`DOCKER_HOST` is honoured). The engine's CLI is needed for the
   streaming/interactive features listed under Engines.
+- For the **Podman (API)** engine: a running Podman service socket — rootless
+  `$XDG_RUNTIME_DIR/podman/podman.sock` (`systemctl --user enable --now
+  podman.socket`), rootful `/run/podman/podman.sock`, or whatever
+  `CONTAINER_HOST` names.
 - `tar` in `PATH` for the image file browser (GNU tar or busybox tar)
 - Linux: the usual GPUI build dependencies, e.g. on Fedora:
 
@@ -298,14 +306,15 @@ the **Connections** tab to make this app talk to the VM.
   Registry accounts are read straight from Podman's auth files
   (`REGISTRY_AUTH_FILE`, the runtime `auth.json` and `~/.docker/config.json`);
   only the username and credential type are shown, never the secret.
-- **Docker**: `src/podman/docker.rs` uses [`bollard`](https://docs.rs/bollard)
-  against the Docker socket (`DOCKER_HOST` is honoured) for the snapshot,
-  dashboard, details, stats and container/volume/network/image actions. A small
-  Tokio runtime bridges bollard's async API to the app's synchronous background
-  calls. Podman-only resources return an error, and the UI hides their views.
-  Operations that stream a child process use the `docker` CLI (selected by
-  `src/podman/exec.rs`); `src/podman/engine.rs` holds the current engine and its
-  capability flags.
+- **API engines**: `src/podman/api.rs` uses [`bollard`](https://docs.rs/bollard)
+  for both **Docker** (its socket, `DOCKER_HOST` is honoured) and **Podman
+  (API)** (the Podman socket, `CONTAINER_HOST` is honoured, then the rootless and
+  rootful defaults) for the snapshot, dashboard, details, stats and
+  container/volume/network/image actions. A small Tokio runtime bridges bollard's
+  async API to the app's synchronous background calls. Podman-only resources
+  return an error, and the UI hides their views. Operations that stream a child
+  process use the engine's CLI (selected by `src/podman/exec.rs`);
+  `src/podman/engine.rs` holds the current engine and its capability flags.
   All commands use argument arrays (no shell), and user-supplied image
   references, names, port mappings, env entries and mounts are validated before
   being passed through. Compose projects are derived from the labels on
@@ -467,10 +476,18 @@ prioritized next milestones and verification checklist.
 
 ## Known limitations
 
-- **Podman engine**: the CLI is used instead of the libpod REST API: one process
-  per action and no structured progress reporting (pull/build output is streamed
-  as plain text). This is deliberate for now (no socket dependency); revisit the
-  REST API if those capabilities become priorities — see [ROADMAP.md](ROADMAP.md).
+- **Podman engine**: the default engine uses the CLI instead of the libpod REST
+  API: one process per action and no structured progress reporting (pull/build
+  output is streamed as plain text). This is deliberate so no socket is needed
+  and every Podman version that prints `--format json` works.
+- **Podman (API) engine**: reads and acts through Podman's Docker-compatible API,
+  so it needs the Podman service socket (see Requirements) and exposes the
+  Docker-compatible surface: pods, standalone secrets, machines and Podman-style
+  named connections are hidden (use the Podman CLI engine for those). SSH
+  connections are not handled by API engines; use the CLI engine for
+  `--connection`, or expose the remote socket locally (`ssh -L`). The CLI is
+  still spawned for logs, the interactive terminal, compose, build, pull/push
+  and registry login, so those commands reach the same local engine.
 - **Docker engine**: pods, standalone secrets, machines and Podman-style named
   connections do not exist, so their views and the Run dialog's Secrets field are
   hidden. Docker uses its HTTP API for lists, details, stats and actions, but the

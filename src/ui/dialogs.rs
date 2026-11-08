@@ -1091,8 +1091,9 @@ impl Selkie {
                         false,
                     ),
                 ];
-                // Docker has no standalone secrets; keep the row Podman-only.
-                if !podman::is_docker() {
+                // API engines have no standalone secrets; keep the row
+                // Podman-CLI-only.
+                if podman::has_secrets() {
                     inputs.push((
                         "Secrets",
                         secrets.as_str(),

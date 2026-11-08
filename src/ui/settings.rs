@@ -48,12 +48,12 @@ pub struct Settings {
     pub details_width: f32,
     #[serde(default)]
     pub window: Option<WindowState>,
-    /// Container engine used for every view. Podman is the default; Docker is
-    /// reached through its HTTP API.
+    /// Container engine used for every view: the Podman CLI (default), Podman's
+    /// Docker-compatible API, or Docker.
     #[serde(default)]
     pub engine: EngineKind,
-    /// Named Podman connection used for every command; `None` means Podman's
-    /// default (usually the local engine). Ignored by the Docker engine.
+    /// Named Podman connection used for every CLI command; `None` means Podman's
+    /// default (usually the local engine). Ignored by the API engines.
     #[serde(default)]
     pub connection: Option<String>,
 }

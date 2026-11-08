@@ -199,7 +199,7 @@ impl Selkie {
             .section_container("settings-engine")
             .child(panel(vec![option_row(
                 "Engine",
-                "Podman uses its CLI; Docker uses its HTTP API".to_string(),
+                "Podman uses its CLI; Podman (API) and Docker use their HTTP API".to_string(),
                 engine_options,
             )]));
 
@@ -242,10 +242,21 @@ impl Selkie {
                     about_row("Connections", self.local.connections.len().to_string()),
                 ]));
         } else {
-            content = content.child(panel(vec![about_row(
-                "Podman-only features",
-                "pods, secrets, machines and connections are hidden".to_string(),
-            )]));
+            let note = match self.settings.engine {
+                EngineKind::PodmanApi => {
+                    "pods, secrets, machines and connections are hidden; use the Podman engine (CLI) for those"
+                }
+                _ => "pods, secrets, machines and connections are hidden",
+            };
+            content = content
+                .child(panel(vec![about_row(
+                    "Podman-only features",
+                    note.to_string(),
+                )]))
+                .child(panel(vec![about_row(
+                    "API endpoint",
+                    podman::api_endpoint(),
+                )]));
         }
 
         content.into_any_element()

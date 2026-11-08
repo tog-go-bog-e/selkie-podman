@@ -1,10 +1,11 @@
-//! Docker Engine backend, implemented with the Docker HTTP API through
-//! [`bollard`].
+//! HTTP backend for the API engines (Docker and Podman's Docker-compatible
+//! API), implemented with [`bollard`].
 //!
 //! Everything this module exposes is synchronous: the UI already calls the
 //! engine client from GPUI's background executor, so a small dedicated Tokio
 //! runtime bridges bollard's futures. That keeps the rest of the app unchanged
-//! and means the Docker socket is used directly, without a `docker` process.
+//! and means the daemon socket is used directly, without spawning a CLI process
+//! for every read.
 
 use std::future::Future;
 
@@ -25,17 +26,18 @@ fn runtime() -> &'static tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
-            .thread_name("selkie-docker")
+            .thread_name("selkie-api")
             .build()
-            .expect("failed to start the Docker runtime")
+            .expect("failed to start the engine API runtime")
     })
 }
 
-/// How long a resolved Docker host is trusted before `docker context` is
-/// consulted again (the user may run `docker context use` meanwhile).
+/// How long a resolved endpoint is trusted before the host is resolved again
+/// (`docker context use`, a new Podman socket, ...).
 const HOST_TTL: Duration = Duration::from_secs(15);
 
 struct CachedClient {
+    kind: EngineKind,
     host: String,
     docker: Docker,
     resolved_at: Instant,
@@ -46,30 +48,33 @@ fn client_slot() -> &'static std::sync::Mutex<Option<CachedClient>> {
     CLIENT.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-/// The API client for the daemon the `docker` CLI targets, so the tables and
-/// the CLI-driven actions (logs, exec, compose, build, run) see the same engine.
+/// The API client for the current engine.
 ///
 /// The client, and the API version negotiated with the daemon, are reused
-/// until the resolved host changes; the host is re-resolved every
+/// until the engine or its endpoint changes; the endpoint is re-resolved every
 /// [`HOST_TTL`].
 fn client() -> Result<Docker, String> {
+    let kind = engine();
     let mut slot = client_slot()
         .lock()
-        .map_err(|_| "the Docker client cache is poisoned".to_string())?;
+        .map_err(|_| "the engine API client cache is poisoned".to_string())?;
     if let Some(cached) = slot.as_mut() {
-        if cached.resolved_at.elapsed() < HOST_TTL {
-            return Ok(cached.docker.clone());
-        }
-        let host = docker_host();
-        if host == cached.host {
-            cached.resolved_at = Instant::now();
-            return Ok(cached.docker.clone());
+        if cached.kind == kind {
+            if cached.resolved_at.elapsed() < HOST_TTL {
+                return Ok(cached.docker.clone());
+            }
+            let host = api_host(kind);
+            if host == cached.host {
+                cached.resolved_at = Instant::now();
+                return Ok(cached.docker.clone());
+            }
         }
     }
 
-    let host = docker_host();
+    let host = api_host(kind);
     let docker = connect(&host)?;
     *slot = Some(CachedClient {
+        kind,
         host,
         docker: docker.clone(),
         resolved_at: Instant::now(),
@@ -78,22 +83,72 @@ fn client() -> Result<Docker, String> {
 }
 
 fn connect(host: &str) -> Result<Docker, String> {
+    let label = engine().label();
     let docker = if host.starts_with("unix://") {
         Docker::connect_with_unix(host, 120, bollard::API_DEFAULT_VERSION)
     } else if host.starts_with("ssh://") {
         return Err(format!(
-            "the Docker host {host} uses SSH, which Selkie's Docker support does not handle yet; \
-             expose the remote daemon over a local socket (ssh -L) or use a local context"
+            "the {label} endpoint {host} uses SSH, which Selkie's API engines do not handle; \
+             expose the daemon over a local socket (ssh -L) or use the Podman CLI engine"
         ));
     } else {
         Docker::connect_with_host(host)
     }
-    .map_err(|error| format!("could not connect to the Docker engine at {host}: {error}"))?;
+    .map_err(|error| format!("could not connect to the {label} engine at {host}: {error}"))?;
     // bollard defaults to the newest API version; ask the daemon which version
-    // it supports so older Docker installations are not rejected.
+    // it supports so older engines are not rejected.
     runtime()
         .block_on(docker.negotiate_version())
-        .map_err(|error| format!("could not negotiate the Docker API version with {host}: {error}"))
+        .map_err(|error| {
+            format!("could not negotiate the {label} API version with {host}: {error}")
+        })
+}
+
+/// The endpoint the current API engine talks to (also shown in Settings).
+pub fn api_endpoint() -> String {
+    api_host(engine())
+}
+
+fn api_host(kind: EngineKind) -> String {
+    match kind {
+        // The CLI engine never uses the API; the socket is reported for
+        // diagnostics only.
+        EngineKind::Podman | EngineKind::PodmanApi => podman_socket_path(),
+        EngineKind::Docker => docker_host(),
+    }
+}
+
+/// Podman's Docker-compatible API: `CONTAINER_HOST` when set, else the user
+/// socket, else the rootful one.
+fn podman_socket_path() -> String {
+    if let Some(host) = std::env::var("CONTAINER_HOST")
+        .ok()
+        .map(|host| host.trim().to_string())
+        .filter(|host| !host.is_empty())
+    {
+        return host;
+    }
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+        let socket = std::path::Path::new(&runtime).join("podman/podman.sock");
+        if socket.exists() {
+            return format!("unix://{}", socket.display());
+        }
+    }
+    let rootful = "/run/podman/podman.sock";
+    if std::path::Path::new(rootful).exists() {
+        return format!("unix://{rootful}");
+    }
+    // Name the user socket even when it is not running: the error then points
+    // at the service to enable.
+    match std::env::var_os("XDG_RUNTIME_DIR") {
+        Some(runtime) => format!(
+            "unix://{}",
+            std::path::Path::new(&runtime)
+                .join("podman/podman.sock")
+                .display()
+        ),
+        None => format!("unix://{rootful}"),
+    }
 }
 
 /// The daemon address the `docker` CLI would use: `DOCKER_HOST`, else the
@@ -147,8 +202,12 @@ fn current_host() -> String {
     client_slot()
         .lock()
         .ok()
-        .and_then(|slot| slot.as_ref().map(|cached| cached.host.clone()))
-        .unwrap_or_else(docker_host)
+        .and_then(|slot| {
+            slot.as_ref()
+                .filter(|cached| cached.kind == engine())
+                .map(|cached| cached.host.clone())
+        })
+        .unwrap_or_else(|| api_host(engine()))
 }
 
 /// Everything except a Unix socket (or a Windows named pipe) reaches the
@@ -160,7 +219,7 @@ fn is_remote_host(host: &str) -> bool {
 fn call<T>(future: impl Future<Output = Result<T, bollard::errors::Error>>) -> Result<T, String> {
     runtime()
         .block_on(future)
-        .map_err(|error| format!("Docker engine error: {error}"))
+        .map_err(|error| format!("{} engine error: {error}", engine().label()))
 }
 
 // ---------------------------------------------------------------------------
@@ -169,10 +228,11 @@ fn call<T>(future: impl Future<Output = Result<T, bollard::errors::Error>>) -> R
 
 pub(super) fn snapshot() -> Result<Snapshot, String> {
     let docker = client()?;
+    let label = engine().label();
     let version = call(docker.version())?;
     let version = match version.version.filter(|value| !value.is_empty()) {
-        Some(version) => format!("Docker {version}"),
-        None => "Docker".to_string(),
+        Some(version) => format!("{label} {version}"),
+        None => label.to_string(),
     };
 
     let containers = list_containers(&docker)?;
@@ -379,8 +439,8 @@ fn system_info(info: model::SystemInfo) -> SystemInfo {
     SystemInfo {
         version: info
             .server_version
-            .map(|version| format!("Docker {version}"))
-            .unwrap_or_else(|| "Docker".to_string()),
+            .map(|version| format!("{} {version}", engine().label()))
+            .unwrap_or_else(|| engine().label().to_string()),
         os_arch,
         // The daemon's own host name: for Docker Desktop's VM or a remote
         // daemon this is not the machine Selkie runs on.

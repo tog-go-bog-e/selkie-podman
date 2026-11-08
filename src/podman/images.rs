@@ -57,8 +57,8 @@ pub fn parse_images(json: &str) -> Result<Vec<Image>, String> {
 }
 
 pub fn remove_image(id: &str) -> Result<String, String> {
-    if engine::is_docker() {
-        return docker::remove_image(id);
+    if engine::uses_api() {
+        return api::remove_image(id);
     }
     run(&["rmi", "-f", id])
 }
@@ -97,8 +97,8 @@ impl ImageHistoryEntry {
 }
 
 pub fn image_history(image: &str) -> Result<Vec<ImageHistoryEntry>, String> {
-    if engine::is_docker() {
-        return docker::image_history(image);
+    if engine::uses_api() {
+        return api::image_history(image);
     }
     let json = query(&["history", "--format", "json", image])?;
     parse_image_history(&json)

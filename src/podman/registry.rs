@@ -56,7 +56,9 @@ pub(super) fn push_display_for(kind: EngineKind, image: &str, destination: &str)
         EngineKind::Docker => {
             format!("docker tag {image} {destination} && docker push {destination}")
         }
-        EngineKind::Podman => format!("podman push {image} {destination}"),
+        EngineKind::Podman | EngineKind::PodmanApi => {
+            format!("podman push {image} {destination}")
+        }
     }
 }
 

@@ -1,7 +1,10 @@
-//! Minimal client for the local Podman CLI.
+//! Client for the selected container engine.
 //!
-//! The app shells out to `podman` instead of talking to the libpod REST API so
-//! that it works with every Podman version that supports `--format json`.
+//! The **Podman** engine shells out to the `podman` CLI so it works with every
+//! version that supports `--format json`; the **Podman (API)** and **Docker**
+//! engines talk to their daemon over HTTP through [`bollard`] (see `api.rs`).
+//! Both paths produce the same snapshot and action types, so the UI is unaware
+//! of which one is in use.
 //!
 //! The `Raw*` structs mirror the CLI's JSON output. Their fields are optional
 //! because presence and nullability differ between Podman versions.
@@ -19,9 +22,9 @@ use serde::Deserialize;
 // callers keep using `podman::…`; the modules share these imports and each
 // other's items through `use super::*`. The general-purpose helpers live in
 // `crate::util`.
+mod api;
 mod compose;
 mod containers;
-mod docker;
 mod engine;
 mod exec;
 mod images;

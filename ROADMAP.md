@@ -5,7 +5,8 @@ It records what is done, the architectural decisions behind it, and the
 recommended next steps. Update the status markers as work lands.
 
 Milestone A, milestone B (B1 libpod REST deliberately deferred, B2–B8 done) and
-the stats / build / exec parts of milestone C are complete. Remaining work is
+the stats / build / exec parts of milestone C are complete, and an optional
+Docker-compatible API engine now sits beside the CLI default. Remaining work is
 the quick-wins list and packaging.
 
 ## Product intent
@@ -15,21 +16,29 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 
 1. Quick daily container triage (what is running, why did it fail, get the logs).
 2. A small, understandable codebase (single GPUI entity, no framework layer).
-3. Works with a stock Podman install; prefer the libpod socket when available,
-   keep the CLI as a fallback.
+3. Works with a stock Podman install: the CLI is the default and needs no
+   socket; Podman's Docker-compatible API is an opt-in engine for structured
+   data and fewer processes.
 
 ## Current state
 
-### Done (Docker engine)
+### Done (Docker and Podman API engines)
 
-- [x] Select Podman or Docker under `Settings → Engine`; the choice persists
+- [x] Select Podman (CLI, default), Podman (API) or Docker under
+      `Settings → Engine`; the choice persists
 - [x] Docker snapshot, dashboard, inspect, stats and container/volume/network/image
       actions through the Docker HTTP API (`bollard`)
-- [x] Docker events stream and registry accounts from `~/.docker/config.json`
+- [x] Podman (API) runs the same bollard backend against Podman's
+      Docker-compatible API: `CONTAINER_HOST`, else the rootless
+      `$XDG_RUNTIME_DIR/podman/podman.sock`, else `/run/podman/podman.sock`; the
+      client cache is keyed by engine so switching never reuses a Docker client
+- [x] Docker events stream and registry accounts from `~/.docker/config.json`;
+      Podman (API) keeps using Podman's auth files and `podman events`
 - [x] Capability flags hide Pods, Secrets, Machines and Connections (and the Run
-      dialog's Secrets field) when Docker is selected
+      dialog's Secrets field) for both API engines; `Settings → Engine` shows the
+      API endpoint and explains the reduced surface
 - [x] Streaming/interactive surfaces (logs, terminal, compose, build, pull/push,
-      login) use the Docker CLI
+      login) use the engine's CLI (`docker`, or `podman` for Podman API)
 
 ### Done (Milestone A)
 
@@ -594,17 +603,17 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 
 | Concern | Implementation |
 | --- | --- |
-| Data access | Podman: CLI + JSON (`ps`, `images`, `pods`, `volume`, `network`, `inspect`, `logs`, `compose`). Docker: HTTP API via `bollard` (`src/podman/docker.rs`), with the Docker CLI for streaming/interactive commands |
+| Data access | Podman (default): CLI + JSON (`ps`, `images`, `pods`, `volume`, `network`, `inspect`, `logs`, `compose`). API engines (Podman API and Docker): HTTP API via `bollard` (`src/podman/api.rs`), with the engine's CLI for streaming/interactive commands |
 | UI | One GPUI entity (`Selkie`) in `src/ui.rs`; rendering split by concern under `src/ui/` |
 | Styling | `ui/theme.rs` palettes (dark / light / high contrast) via a thread-local current theme |
 | Layout | Sidebar and details widths from settings, adjusted by draggable splitters (`ui/resizer.rs`) and clamped per frame to the window |
 | Persistence | `ui/settings.rs` → JSON in the XDG config dir (engine, theme, tab, refresh, log window, panel widths, window size) |
 | Desktop integration | `src/desktop.rs`: `flock` + Unix socket for single instance; `ksni` (D-Bus) tray; close-to-tray by unmapping the X11 window (map + activate from the tray or a second launch) |
-| Engines | `src/podman/engine.rs` selects Podman (CLI) or Docker (API) and exposes capability flags; Podman machines/connections are parsed into a separate `LocalState`, and the selected connection is injected as `--connection` |
+| Engines | `src/podman/engine.rs` selects Podman (CLI), Podman (API) or Docker (API) and exposes capability flags; Podman machines/connections are parsed into a separate `LocalState`, and the selected connection is injected as `--connection` for the CLI engine |
 | Machines | `podman machine init` (streamed), `machine rm -f` behind a confirmation, and `machine ssh` in the shared PTY terminal; machine commands are local and ignore `--connection` |
 | Lifecycle | Close handler + `Ctrl/Cmd+Q` + tray Quit; window size watched every 500 ms |
 | Updates | `podman events` stream (`src/ui/events.rs`) refreshes the snapshot; polling task with a configurable interval (3/5/10/30 s) remains as fallback |
-| Actions | `std::process::Command` (Podman) or `bollard` (Docker) on a background executor, then refresh |
+| Actions | `std::process::Command` (Podman CLI) or `bollard` (API engines) on a background executor, then refresh |
 | Creating | `podman run -d` from an image with validated name, ports, env, volumes and command (`src/podman.rs`) |
 | Creating resources | `podman volume create` / `network create` / `pod create` with validated optional flags; `podman kube play` streams through the shared output panel |
 | Pruning | `podman volume prune -f` / `network prune -f` behind a confirmation dialog |
@@ -620,7 +629,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Settings page | Sub-navigation with Registries, Appearance (theme, refresh, log window, panel resets), Engine and About; the selected pane is persisted |
 | Builds | `podman build -f <Containerfile> (-t <tag> | --manifest <tag>) [--platform …] [--build-arg …] <context>` (manifest lists for multi-platform); context defaults to the Containerfile directory, all inputs validated, shared output panel |
 | Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
-| Stats | Podman `stats --no-stream` or Docker `/stats?stream=false`, polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
+| Stats | Podman CLI `stats --no-stream`, or `/stats?stream=false` for the API engines, polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
 | Dashboard | Counts from the snapshot; `podman info` + `podman system df` or Docker `info` + `system df` fetched only while the tab is visible and cached for 30 s (info probes the store and takes seconds) |
 | Packaging | `packaging/` holds the SVG/PNG icons, desktop entry, `install.sh` (user-level, `DESTDIR`-capable, `--uninstall`) and `build-release.sh` (versioned tarball + sha256); `app_id` sets `WM_CLASS`, and the app writes `_NET_WM_ICON` itself (16–128 px, drawn at runtime) |
 | Selection | Stored by ID; cleared when the item disappears from the snapshot |
@@ -651,6 +660,12 @@ Priorities, not a strict order. S/M/L are rough effort sizes; see
      set; `podman machine`, `podman system connection` and `podman compose` stay
      CLI-only regardless, so a library would add a second backend rather than
      replace one.
+   - Update (2026-11-08): a Docker-compatible **Podman (API)** engine was added
+     as an opt-in beside the CLI default, reusing the Docker backend
+     (`src/podman/api.rs`). It deliberately exposes the Docker-compatible
+     surface (no pods/secrets/machines/connections and no SSH endpoints), so the
+     CLI remains the full-featured default. A libpod-REST backend would still be
+     needed for those concepts.
    - Revisit only when one of these triggers appears: snapshot refresh cost
      (6 processes per refresh on a chatty engine), stats process churn during
      long sessions, or a need for per-layer pull progress / structured build
@@ -923,7 +938,11 @@ endpoint in an isolated config: the automatic probe marked it `unreachable`, the
 details pane showed Podman's error, the add dialog rendered with its validation
 fields, **Edit…** renamed it and changed the URI (default flag kept, toast
 shown), and **Delete…** removed it; deleting the in-use connection switched the
-app back to Podman's default engine. Stats verified on
+app back to Podman's default engine. Podman (API) verified on 2026-11-08 against
+`podman system service --time=0 unix:///…` with `CONTAINER_HOST`: the snapshot
+loaded 4 containers, 21 images, 3 volumes and 3 networks via the socket, the
+version read `Podman (API) 5.4.2`, Pods/Secrets/Machines/Connections were hidden
+and the engine card named the API engine. Stats verified on
 running containers (graphs update, history survives tab switches) and on a
 stopped container (notice instead of graphs). Build verified end to end through
 the modal: two-field entry with Tab switching, streamed STEP/COMMIT output,
@@ -1367,6 +1386,14 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     danger confirmation, and deleting the connection selected with **Use in this
     app** switches the app back to Podman's default engine. `podman system
     connection list` should agree after each step.
+63. Settings → Engine → **Podman (API)** with the Podman socket running (for a
+    test: `podman system service --time=0 unix:///tmp/selkie.sock` and
+    `CONTAINER_HOST=unix:///tmp/selkie.sock`): the container, image, volume and
+    network lists load with a `Podman (API)` version label, Pods/Secrets/
+    Machines/Connections disappear, the Engine pane shows the API endpoint, and
+    the status bar names the API engine. Stop the service to see the connection
+    error, then switch back to Podman: the CLI data and the Podman-only views
+    return.
 
 ## File map
 

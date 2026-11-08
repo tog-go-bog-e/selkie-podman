@@ -137,8 +137,8 @@ pub fn remove_pod(id: &str) -> Result<String, String> {
 }
 
 pub fn remove_volume(name: &str) -> Result<String, String> {
-    if engine::is_docker() {
-        return docker::remove_volume(name);
+    if engine::uses_api() {
+        return api::remove_volume(name);
     }
     run(&["volume", "rm", "-f", name])
 }
@@ -168,16 +168,16 @@ pub fn volume_create_command(name: &str, driver: Option<&str>) -> Result<Command
 }
 
 pub fn create_volume(name: &str, driver: Option<&str>) -> Result<String, String> {
-    if engine::is_docker() {
+    if engine::uses_api() {
         let (name, driver) = volume_args(name, driver)?;
-        return docker::create_volume(name, driver);
+        return api::create_volume(name, driver);
     }
     execute(volume_create_command(name, driver)?, "volume create")
 }
 
 pub fn prune_volumes() -> Result<String, String> {
-    if engine::is_docker() {
-        return docker::prune_volumes();
+    if engine::uses_api() {
+        return api::prune_volumes();
     }
     run(&["volume", "prune", "-f"])
 }
@@ -245,9 +245,9 @@ pub fn create_network(
     subnet: Option<&str>,
     gateway: Option<&str>,
 ) -> Result<String, String> {
-    if engine::is_docker() {
+    if engine::uses_api() {
         let args = network_args(name, driver, subnet, gateway)?;
-        return docker::create_network(args.name, args.driver, args.subnet, args.gateway);
+        return api::create_network(args.name, args.driver, args.subnet, args.gateway);
     }
     execute(
         network_create_command(name, driver, subnet, gateway)?,
@@ -256,8 +256,8 @@ pub fn create_network(
 }
 
 pub fn prune_networks() -> Result<String, String> {
-    if engine::is_docker() {
-        return docker::prune_networks();
+    if engine::uses_api() {
+        return api::prune_networks();
     }
     run(&["network", "prune", "-f"])
 }
@@ -356,8 +356,8 @@ pub fn validate_pod_name(value: &str) -> Result<&str, String> {
 }
 
 pub fn remove_network(name: &str) -> Result<String, String> {
-    if engine::is_docker() {
-        return docker::remove_network(name);
+    if engine::uses_api() {
+        return api::remove_network(name);
     }
     run(&["network", "rm", "-f", name])
 }
@@ -369,8 +369,8 @@ pub fn inspect_pod(id: &str) -> Result<PodDetails, String> {
 }
 
 pub fn inspect_volume(name: &str) -> Result<VolumeDetails, String> {
-    if engine::is_docker() {
-        return docker::inspect_volume(name);
+    if engine::uses_api() {
+        return api::inspect_volume(name);
     }
     let json = query(&["volume", "inspect", name])?;
     parse_volume_inspect(json.trim())
@@ -378,8 +378,8 @@ pub fn inspect_volume(name: &str) -> Result<VolumeDetails, String> {
 }
 
 pub fn inspect_network(name: &str) -> Result<NetworkDetails, String> {
-    if engine::is_docker() {
-        return docker::inspect_network(name);
+    if engine::uses_api() {
+        return api::inspect_network(name);
     }
     let json = query(&["network", "inspect", name])?;
     parse_network_inspect(json.trim())

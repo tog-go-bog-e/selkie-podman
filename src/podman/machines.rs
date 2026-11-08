@@ -230,7 +230,7 @@ impl MachineAction {
 /// Machines and connections come from local Podman configuration, so they stay
 /// available even when the selected engine is unreachable.
 pub fn local_state() -> LocalState {
-    if engine::is_docker() {
+    if !engine::has_machines() {
         return LocalState::default();
     }
     LocalState {
