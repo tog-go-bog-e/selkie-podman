@@ -44,16 +44,16 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(window_bounds),
                     // Sets WM_CLASS on X11 so desktop environments group the
-                    // window with podman-desktop-rs.desktop (StartupWMClass).
-                    app_id: Some("podman-desktop-rs".into()),
+                    // window with selkie.desktop (StartupWMClass).
+                    app_id: Some("selkie".into()),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("Podman Desktop - Rust Edition".into()),
+                        title: Some("Selkie".into()),
                         ..Default::default()
                     }),
                     window_min_size: Some(size(px(MIN_WIDTH), px(MIN_HEIGHT))),
                     ..Default::default()
                 },
-                |_window, cx| cx.new(ui::PodmanDesktop::new),
+                |_window, cx| cx.new(ui::Selkie::new),
             )
             .expect("failed to open the main window");
 

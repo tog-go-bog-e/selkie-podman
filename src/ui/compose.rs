@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 
-impl PodmanDesktop {
+impl Selkie {
     // -----------------------------------------------------------------------
     // Compose project details and actions
     // -----------------------------------------------------------------------

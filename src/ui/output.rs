@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 
-impl PodmanDesktop {
+impl Selkie {
     // -----------------------------------------------------------------------
     // Streamed command output (compose actions, image builds)
     // -----------------------------------------------------------------------
@@ -104,7 +104,7 @@ impl PodmanDesktop {
     }
 }
 
-impl PodmanDesktop {
+impl Selkie {
     // -----------------------------------------------------------------------
     // Long-running commands with streamed output (compose, image builds)
     // -----------------------------------------------------------------------

@@ -123,8 +123,8 @@ fn state_paths() -> (PathBuf, PathBuf) {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     if let Some(base) = runtime {
-        let lock = base.join("podman-desktop-rs.lock");
-        let socket = base.join("podman-desktop-rs.sock");
+        let lock = base.join("selkie.lock");
+        let socket = base.join("selkie.sock");
         // Unix socket paths are limited to roughly 108 bytes; fall back to the
         // temp directory if the runtime directory is too deep.
         if socket.as_os_str().len() <= 100 && lock.as_os_str().len() <= 100 {
@@ -136,8 +136,8 @@ fn state_paths() -> (PathBuf, PathBuf) {
     let uid = unsafe { libc::getuid() };
     let fallback = std::env::temp_dir();
     (
-        fallback.join(format!("podman-desktop-rs-{uid}.lock")),
-        fallback.join(format!("podman-desktop-rs-{uid}.sock")),
+        fallback.join(format!("selkie-{uid}.lock")),
+        fallback.join(format!("selkie-{uid}.sock")),
     )
 }
 
@@ -153,7 +153,7 @@ pub fn start_tray() -> Receiver<Signal> {
                     std::thread::park();
                 },
                 // No StatusNotifierItem host: keep running without a tray icon.
-                Err(error) => eprintln!("podman-desktop-rs: tray icon unavailable: {error}"),
+                Err(error) => eprintln!("selkie: tray icon unavailable: {error}"),
             }
         })
         .ok();
@@ -172,11 +172,11 @@ impl AppTray {
 
 impl ksni::Tray for AppTray {
     fn id(&self) -> String {
-        "podman-desktop-rs".into()
+        "selkie".into()
     }
 
     fn title(&self) -> String {
-        "Podman Desktop".into()
+        "Selkie".into()
     }
 
     fn category(&self) -> ksni::Category {
@@ -189,7 +189,7 @@ impl ksni::Tray for AppTray {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
-            title: "Podman Desktop".into(),
+            title: "Selkie".into(),
             description: "Containers, images, pods, volumes and networks".into(),
             icon_pixmap: vec![icon()],
             ..Default::default()
@@ -365,7 +365,7 @@ pub fn install_window_icon() {
         .name("window-icon".into())
         .spawn(|| {
             if let Err(error) = set_window_icon() {
-                eprintln!("podman-desktop-rs: window icon unavailable: {error}");
+                eprintln!("selkie: window icon unavailable: {error}");
             }
         })
         .ok();

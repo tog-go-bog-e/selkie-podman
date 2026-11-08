@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 
-impl PodmanDesktop {
+impl Selkie {
     // Sidebar
     // -----------------------------------------------------------------------
 
@@ -36,13 +36,13 @@ impl PodmanDesktop {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Podman Desktop"),
+                            .child("Selkie"),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(rgb(theme().muted))
-                            .child("rust edition"),
+                            .child("for Podman"),
                     ),
             )
     }

@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 
-impl PodmanDesktop {
+impl Selkie {
     pub(super) fn table_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         match self.tab {
             Tab::Containers => self.container_row(self.visible_indices[ix], cx),
@@ -1358,6 +1358,9 @@ impl PodmanDesktop {
         );
         let name = connection.name.clone();
         let check_name = connection.name.clone();
+        let edit_connection = connection.clone();
+        let delete_name = connection.name.clone();
+        let engine_idle = self.output_run.is_none();
 
         div()
             .invisible()
@@ -1385,6 +1388,17 @@ impl PodmanDesktop {
                 }),
             ))
             .child(row_action_button(
+                SharedString::from(format!("connection-row-{ix}-edit")),
+                "Edit",
+                self.busy.is_none(),
+                theme().muted,
+                theme().hover_bg,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_modal(Modal::edit_connection(&edit_connection), window, cx);
+                }),
+            ))
+            .child(row_action_button(
                 SharedString::from(format!("connection-row-{ix}-use")),
                 "Use",
                 available,
@@ -1393,6 +1407,17 @@ impl PodmanDesktop {
                 cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.use_connection(Some(name.clone()), cx);
+                }),
+            ))
+            .child(row_action_button(
+                SharedString::from(format!("connection-row-{ix}-delete")),
+                "Delete",
+                self.busy.is_none() && engine_idle,
+                theme().red,
+                theme().red_bg,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_modal(Modal::delete_connection(delete_name.clone()), window, cx);
                 }),
             ))
     }

@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl PodmanDesktop {
+impl Selkie {
     // -----------------------------------------------------------------------
     // Modals
     // -----------------------------------------------------------------------
@@ -250,17 +250,30 @@ impl PodmanDesktop {
                     return;
                 }
             }
-            Modal::CreateConnection {
-                name,
-                uri,
-                identity,
-                ..
-            } => {
-                let identity = Some(identity.trim().to_string()).filter(|value| !value.is_empty());
-                if let Err(error) = podman::connection_add_command(name, uri, identity.as_deref()) {
+            Modal::CreateConnection { form } | Modal::EditConnection { form, .. } => {
+                let identity = form.identity();
+                if let Err(error) =
+                    podman::connection_add_command(&form.name, &form.uri, identity.as_deref())
+                {
                     self.toast(ToastKind::Error, error, cx);
                     self.modal_focus.focus(window);
                     return;
+                }
+                // Fast feedback only: connection_update re-checks against
+                // Podman's current list before renaming.
+                if let Modal::EditConnection { original, .. } = &modal {
+                    let name = form.name.trim();
+                    if name != original
+                        && self.local.connections.iter().any(|item| item.name == name)
+                    {
+                        self.toast(
+                            ToastKind::Error,
+                            format!("a connection named {name} already exists"),
+                            cx,
+                        );
+                        self.modal_focus.focus(window);
+                        return;
+                    }
                 }
             }
             Modal::CreateMachine {
@@ -605,15 +618,10 @@ impl PodmanDesktop {
                     cx,
                 );
             }
-            Modal::CreateConnection {
-                name,
-                uri,
-                identity,
-                ..
-            } => {
-                let name = name.trim().to_string();
-                let uri = uri.trim().to_string();
-                let identity = Some(identity.trim().to_string()).filter(|value| !value.is_empty());
+            Modal::CreateConnection { form } => {
+                let name = form.trimmed_name();
+                let uri = form.trimmed_uri();
+                let identity = form.identity();
                 self.run_task(
                     format!("Adding connection {name}…"),
                     format!("Added connection {name}"),
@@ -656,6 +664,16 @@ impl PodmanDesktop {
                     Err(error) => self.toast(ToastKind::Error, error, cx),
                 }
             }
+            Modal::EditConnection { original, form } => {
+                self.update_connection(
+                    original,
+                    form.trimmed_name(),
+                    form.trimmed_uri(),
+                    form.identity(),
+                    cx,
+                );
+            }
+            Modal::DeleteConnection { name } => self.remove_connection(name, cx),
             Modal::DeleteMachine { name } => {
                 self.run_task(
                     format!("Deleting machine {name}…"),
@@ -853,22 +871,12 @@ impl PodmanDesktop {
                     edit_text(target, event, cx)
                 }
             }
-            Some(Modal::CreateConnection {
-                field,
-                name,
-                uri,
-                identity,
-            }) => {
+            Some(Modal::CreateConnection { form } | Modal::EditConnection { form, .. }) => {
                 if event.keystroke.key.as_str() == "tab" {
-                    *field = field.next();
+                    form.field = form.field.next();
                     TextOutcome::Edited
                 } else {
-                    let target = match field {
-                        ConnectionField::Name => name,
-                        ConnectionField::Uri => uri,
-                        ConnectionField::Identity => identity,
-                    };
-                    edit_text(target, event, cx)
+                    edit_text(form.field_mut(), event, cx)
                 }
             }
             Some(Modal::PlayKube { path }) => edit_text(path, event, cx),

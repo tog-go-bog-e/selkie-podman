@@ -1,7 +1,12 @@
-# Podman Desktop · Rust edition
+# Selkie
 
-A deliberately small reimplementation of [Podman Desktop](https://podman-desktop.io)
-in Rust using [`gpui`](https://gpui.rs), Zed's GPU-accelerated UI framework.
+A native desktop client for [Podman](https://podman.io), written in Rust with
+[`gpui`](https://gpui.rs), Zed's GPU-accelerated UI framework. It is a
+deliberately small, lightweight alternative to
+[Podman Desktop](https://podman-desktop.io).
+
+Selkie is an independent project. It is not affiliated with or endorsed by the
+Podman or Podman Desktop projects.
 
 Current scope: **manage containers and images on the local Podman engine**.
 
@@ -75,14 +80,23 @@ Current scope: **manage containers and images on the local Podman engine**.
   default) with a reachability **STATUS**, and choose which engine this app talks
   to. **Add connection** runs `podman system connection add` for an SSH
   (`ssh://user@host:22/run/user/1000/podman/podman.sock`) or `unix://` endpoint,
-  with an optional identity file (`~` is expanded; keys from the SSH agent need
-  no identity). **Check all**, a row's **Check** or the details action bar probes
+  with an optional identity file (`~` is expanded). Leaving the identity empty
+  uses the running **ssh-agent**; if the app did not inherit `SSH_AUTH_SOCK`,
+  Podman is pointed at `$XDG_RUNTIME_DIR/openssh_agent` or
+  `$XDG_RUNTIME_DIR/keyring/ssh` when present. Interactive password or
+  passphrase prompts cannot be answered in-app, so load the key into the agent
+  or pick an identity file that needs no passphrase. **Check all**, a row's
+  **Check** or the details action bar probes
   each connection with `podman --connection <name> info`; the column, details
   pane and a toast report `reachable` / `unreachable` with Podman's error.
-  Switching uses `--connection <name>` for every command and persists across
-  restarts; **Use Podman default** switches back. Switching never modifies the
-  user's Podman configuration, and the add dialog does not pass `--default`
-  (Podman itself may mark the first connection as its default).
+  **Edit…** reopens the same form prefilled (a name change renames the
+  connection first, a URI/identity change re-adds it in place) and **Delete…**
+  removes it after a confirmation; deleting the connection this app uses falls
+  back to Podman's default engine. Switching uses `--connection <name>` for
+  every command and persists across restarts; **Use Podman default** switches
+  back. Switching never modifies the user's Podman configuration, and the
+  connection form does not pass `--default` (Podman itself may mark the first
+  connection as its default).
 - **Details pane**: image, ID, status, created, PID, exit code, networks,
   command, mounts and environment from `podman inspect`; separate Summary, Logs,
   Stats and Terminal tabs for containers, and a Terminal tab for running
@@ -156,7 +170,7 @@ Current scope: **manage containers and images on the local Podman engine**.
 ## Run
 
 ```bash
-cd podman-desktop-rs
+cd selkie
 cargo run          # debug, optimized deps
 cargo run --release
 ```
@@ -187,7 +201,7 @@ packaging/install.sh --uninstall
 ```
 
 `packaging/build-release.sh` writes
-`dist/podman-desktop-rs-<version>-<target>.tar.gz` (binary, README, ROADMAP,
+`dist/selkie-<version>-<target>.tar.gz` (binary, README, ROADMAP,
 LICENSE, desktop entry, icons, installer) and a `.sha256` next to it.
 
 ### Debian package
@@ -197,20 +211,20 @@ together with the desktop entry, the icons and a man page:
 
 ```bash
 packaging/build-deb.sh
-sudo apt install ./dist/podman-desktop-rs_<version>-1_<arch>.deb
+sudo apt install ./dist/selkie_<version>-1_<arch>.deb
 ```
 
-The package is named `podman-desktop-rs`, depends on `podman`, `libvulkan1` and
+The package is named `selkie`, depends on `podman`, `libvulkan1` and
 `libwayland-client0` (plus the X11/XKB libraries the binary links) and recommends
 `mesa-vulkan-drivers` for the software renderer. It installs:
 
 | Path | Contents |
 | ---- | -------- |
-| `/usr/bin/podman-desktop-rs` | stripped release binary |
-| `/usr/share/applications/podman-desktop-rs.desktop` | menu entry (`Development` category) |
-| `/usr/share/icons/hicolor/*/apps/podman-desktop-rs.png` | 16–512 px icons |
-| `/usr/share/man/man1/podman-desktop-rs.1.gz` | manual page |
-| `/usr/share/doc/podman-desktop-rs/` | README, ROADMAP, copyright, changelog |
+| `/usr/bin/selkie` | stripped release binary |
+| `/usr/share/applications/selkie.desktop` | menu entry (`Development` category) |
+| `/usr/share/icons/hicolor/*/apps/selkie.png` | 16–512 px icons |
+| `/usr/share/man/man1/selkie.1.gz` | manual page |
+| `/usr/share/doc/selkie/` | README, ROADMAP, copyright, changelog |
 
 The entry appears in the desktop menu under **Development** (Cinnamon, GNOME,
 KDE, XFCE all read it); `update-desktop-database` and the icon cache are
@@ -222,7 +236,7 @@ runs automatically when installed.
 
 Notes:
 
-- The window sets `WM_CLASS=podman-desktop-rs`, matching the desktop entry's
+- The window sets `WM_CLASS=selkie`, matching the desktop entry's
   `StartupWMClass`, so launchers group the window with its icon. GPUI has no icon
   API, so the app sets `_NET_WM_ICON` itself (sizes 16–128, drawn at runtime from
   the same code as the tray icon); window managers that draw the icon in the
@@ -280,9 +294,9 @@ the **Connections** tab to make this app talk to the VM.
   connection, then `containers`, `images`, `compose`, `resources` for pods,
   volumes and networks, `machines`, `registry`, `system` and `util`), all
   re-exported from `src/podman.rs`.
-- `src/ui.rs` holds the `PodmanDesktop` entity: shared state, the constructor
+- `src/ui.rs` holds the `Selkie` entity: shared state, the constructor
   and the render entry point. Behaviour and rendering are split by concern
-  (all `impl PodmanDesktop` or shared helpers, reusing the state in `ui.rs`):
+  (all `impl Selkie` or shared helpers, reusing the state in `ui.rs`):
   - `src/ui/loading.rs` — snapshot loading and the refresh cycle
   - `src/ui/navigation.rs` — keyboard navigation and the row context menu
   - `src/ui/selection.rs` — selection, details data, log streams, stats, actions
@@ -384,7 +398,7 @@ the **Connections** tab to make this app talk to the VM.
   the app.
 - `src/desktop.rs` covers the desktop integration:
   - the single instance is an exclusive `flock` on
-    `$XDG_RUNTIME_DIR/podman-desktop-rs.lock`; the primary instance also listens
+    `$XDG_RUNTIME_DIR/selkie.lock`; the primary instance also listens
     on a Unix socket there and a second launch sends `activate` before exiting;
   - the tray icon is a freedesktop StatusNotifierItem served over D-Bus with
     `ksni` (no GTK/AppIndicator C libraries); its icon is generated at runtime;
@@ -398,8 +412,8 @@ the **Connections** tab to make this app talk to the VM.
 
 ## Settings
 
-Settings live in `$XDG_CONFIG_HOME/podman-desktop-rs/settings.json`, falling back
-to `~/.config/podman-desktop-rs/settings.json`, and are saved whenever they
+Settings live in `$XDG_CONFIG_HOME/selkie/settings.json`, falling back
+to `~/.config/selkie/settings.json`, and are saved whenever they
 change:
 
 - **Theme** — Dark / Light / High contrast in **Settings → Appearance**.
@@ -500,11 +514,13 @@ prioritized next milestones and verification checklist.
   yet. The Containerfile and any explicit context must exist on the machine
   running the app.
 - Remote engines must already be configured in Podman (SSH keys/agent, socket
-  path), or added from the Connections tab. The add dialog covers `ssh://` and
-  `unix://` only (no `tcp://` TLS options), cannot edit/remove connections (use
-  `podman system connection remove`), and reachability results are in-memory and
-  only refreshed on demand. Compose against a remote connection depends on the
-  compose provider. Switching a connection is local to this app and never runs
+  path), or added from the Connections tab. The connection form covers `ssh://`
+  and `unix://` only (no `tcp://` TLS options), and reachability results are
+  in-memory and only refreshed on demand. SSH password and key-passphrase
+  prompts cannot be answered because commands run without a TTY; load the key
+  into the ssh-agent (or use an identity file without a passphrase). Compose
+  against a remote connection depends on the compose provider. Switching a
+  connection is local to this app and never runs
   `podman system connection default`.
 - No multi-select, bulk actions or command palette yet. Sort is per tab, resets
   on tab switch, and is not persisted.

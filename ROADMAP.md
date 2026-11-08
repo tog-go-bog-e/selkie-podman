@@ -1,6 +1,6 @@
-# Roadmap — Podman Desktop · Rust edition
+# Roadmap — Selkie
 
-Status as of 2026-11-05. This is the durable plan for `podman-desktop-rs/`.
+Status as of 2026-11-05. This is the durable plan for `selkie/`.
 It records what is done, the architectural decisions behind it, and the
 recommended next steps. Update the status markers as work lands.
 
@@ -65,7 +65,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 - [x] Themes: dark, light, high contrast (`ui/theme.rs`); every color in the UI
       resolves through `theme()` — no literal color constants remain
 - [x] Persisted settings (`ui/settings.rs`): theme, active tab, refresh interval,
-      log window; stored at `$XDG_CONFIG_HOME|~/.config/podman-desktop-rs/settings.json`
+      log window; stored at `$XDG_CONFIG_HOME|~/.config/selkie/settings.json`
       with per-field validation, saved on every change
 - [x] Sidebar settings rows: theme cycle, auto-refresh cycle (3/5/10/30 s)
 - [x] Log window cycle in the log toolbar (5m/10m/30m/1h) feeding
@@ -488,7 +488,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       default, plus machine/connection counts
 - [x] **About** pane: app version, Podman version, settings path, renderer
 
-### Done (connections: add + reachability)
+### Done (connections: add, edit, delete + reachability)
 
 - [x] **Add connection** in the Connections toolbar opens a form for name, URI
       and an optional identity file; it runs the local
@@ -496,8 +496,26 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       `--default`, though Podman may itself mark the first connection as its
       default
 - [x] URI validation accepts `ssh://` and absolute `unix://` endpoints only;
-      the identity file must exist and `~/` is expanded because the command is
-      spawned without a shell; invalid input keeps the modal open with a toast
+      an identity file must exist, is rejected for `unix://` (Podman refuses it)
+      and `~/` is expanded because the command is spawned without a shell;
+      invalid input keeps the modal open with a toast
+- [x] SSH connections with an empty identity use the running **ssh-agent**. If
+      the app did not inherit `SSH_AUTH_SOCK` (common for desktop launches), the
+      engine and probe commands are pointed at `$XDG_RUNTIME_DIR/openssh_agent`
+      or `$XDG_RUNTIME_DIR/keyring/ssh` when a socket exists there. Interactive
+      password/passphrase prompts cannot be answered because commands run
+      without a TTY, and the dialog says so
+- [x] **Edit…** (details action bar, row hover, context menu) reopens the form
+      prefilled. Podman has no edit command, so a name change runs
+      `system connection rename` first (keeping the default flag) and the
+      URI/identity update re-runs `add` under the same name, which replaces them
+      in place; clearing the identity removes it, and renaming into an existing
+      name is rejected. When the edited connection is in use, the stored
+      connection name follows the rename
+- [x] **Delete…** opens a danger confirmation and runs
+      `podman system connection remove NAME`; deleting the connection this app
+      uses clears the engine state and falls back to Podman's default engine
+      (the same guard as switching, so it is blocked while a build/compose runs)
 - [x] The Connections table gets a reachability **STATUS** column and the
       details pane a **REACHABILITY** section with Podman's error text; rows,
       the context menu, the details action bar and a toolbar **Check all** probe
@@ -513,11 +531,11 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 
 ### Done (packaging & desktop integration)
 
-- [x] `packaging/podman-desktop-rs.svg`: scalable app icon matching the tray mark
+- [x] `packaging/selkie.svg`: scalable app icon matching the tray mark
       (Podman purple `#892ca0`, rounded square, white “P”), rendered to 16–512 px
       PNGs by `packaging/render-icons.sh` (rsvg-convert → Inkscape → ImageMagick)
-- [x] `packaging/podman-desktop-rs.desktop`: `Exec`/`TryExec`, `Icon`, keywords,
-      `StartupWMClass=podman-desktop-rs` and a single main category; passes
+- [x] `packaging/selkie.desktop`: `Exec`/`TryExec`, `Icon`, keywords,
+      `StartupWMClass=selkie` and a single main category; passes
       `desktop-file-validate`
 - [x] The window now sets `app_id`, which GPUI turns into `WM_CLASS` on X11
       (verified with `xprop`), so launchers associate the window with the entry
@@ -526,10 +544,10 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       `PREFIX`/`BINDIR`/`DATADIR`/`DESTDIR` overrides and desktop/icon cache
       refresh; works both in-tree and from an extracted archive
 - [x] `packaging/build-release.sh`: builds the release binary and writes
-      `dist/podman-desktop-rs-<version>-<target>.tar.gz` (binary, README, ROADMAP,
+      `dist/selkie-<version>-<target>.tar.gz` (binary, README, ROADMAP,
       LICENSE, desktop entry, icons, installer) plus a `.sha256`
 - [x] `packaging/build-deb.sh`: builds
-      `dist/podman-desktop-rs_<version>-1_<arch>.deb` with the stripped binary in
+      `dist/selkie_<version>-1_<arch>.deb` with the stripped binary in
       `/usr/bin`, the desktop entry in `/usr/share/applications`, the seven icons
       in the hicolor theme, a gzipped man page and DEP-5 docs; computes
       `Depends` with `dpkg-shlibdeps` when available and adds the libraries the
@@ -566,7 +584,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Concern | Implementation |
 | --- | --- |
 | Data access | `podman` CLI + JSON (`ps`, `images`, `pods`, `volume`, `network`, `inspect`, `logs`, `compose`) |
-| UI | One GPUI entity (`PodmanDesktop`) in `src/ui.rs`; rendering split by concern under `src/ui/` |
+| UI | One GPUI entity (`Selkie`) in `src/ui.rs`; rendering split by concern under `src/ui/` |
 | Styling | `ui/theme.rs` palettes (dark / light / high contrast) via a thread-local current theme |
 | Layout | Sidebar and details widths from settings, adjusted by draggable splitters (`ui/resizer.rs`) and clamped per frame to the window |
 | Persistence | `ui/settings.rs` → JSON in the XDG config dir (theme, tab, refresh, log window, panel widths, window size) |
@@ -587,7 +605,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Long-running commands | `src/ui/output.rs` + `start_output`: compose up/down, image builds and pulls stream stdout/stderr into one panel, one at a time |
 | Registries | `podman push` with a validated destination; `podman login --password-stdin` / `podman logout` with credentials kept out of argv; loopback registries skip TLS verification |
 | Accounts | Registry logins parsed from Podman's auth files (`REGISTRY_AUTH_FILE`, runtime/config `auth.json`, Docker config); username and a masked password (or `token`), a `⋮` menu with Log out, Add registry, and Configure buttons for Docker Hub/Quay/GitHub/GCR |
-| Connections | `podman system connection list` read locally; **Add connection** runs `podman system connection add [--identity FILE] NAME URI` (ssh:// or absolute unix://, `~/` expanded, no `--default`); reachability probes run `podman --connection NAME info` in background tasks (15 s cap) and feed the STATUS column, details pane and explicit-check toasts; every engine command gets `--connection NAME` |
+| Connections | `podman system connection list` read locally; **Add**/**Edit** run `podman system connection add [--identity FILE] NAME URI` (ssh:// or absolute unix://, `~/` expanded, no `--default`; edits rename first and then replace URI/identity in place) and **Delete** runs `system connection remove`; reachability probes run `podman --connection NAME info` in background tasks (15 s cap) and feed the STATUS column, details pane and explicit-check toasts; every engine command gets `--connection NAME` |
 | Settings page | Sub-navigation with Registries, Appearance (theme, refresh, log window, panel resets), Engine and About; the selected pane is persisted |
 | Builds | `podman build -f <Containerfile> (-t <tag> | --manifest <tag>) [--platform …] [--build-arg …] <context>` (manifest lists for multi-platform); context defaults to the Containerfile directory, all inputs validated, shared output panel |
 | Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
@@ -691,14 +709,14 @@ Priorities, not a strict order. S/M/L are rough effort sizes; see
 ### Quick wins worth slotting earlier
 
 - Build cache/target options (`--no-cache`, `--target`, cache mounts).
-- Edit/remove connections from the UI (removal still needs
-  `podman system connection remove`), periodic re-probing instead of on-demand
-  checks, and `tcp://` connections with TLS options.
+- Periodic re-probing of connections instead of on-demand checks, and `tcp://`
+  connections with TLS options.
 
 Done already: pause/resume, rename, sortable columns, raw inspect JSON viewer,
 streamed pull progress, "load older" logs, resizable panels, build
 context/platform/args and table ellipsis; configurable log window (B6) and
-Copy ID/name (B3); adding connections and checking their reachability (2026-11-07).
+Copy ID/name (B3); adding, editing and deleting connections and checking their
+reachability (2026-11-07).
 
 ## Recommended next step
 
@@ -867,7 +885,7 @@ i18n. See "Non-goals" above.
 Run for every change:
 
 ```bash
-cd podman-desktop-rs
+cd selkie
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
@@ -891,8 +909,10 @@ lists still usable) and back to the Podman default engine, plus the Machines
 empty state; machine/connection parsing covered by unit tests. Connection
 add/reachability (2026-11-07) verified against an unreachable `unix://`
 endpoint in an isolated config: the automatic probe marked it `unreachable`, the
-details pane showed Podman's error and the add dialog rendered with its
-validation fields. Stats verified on
+details pane showed Podman's error, the add dialog rendered with its validation
+fields, **Edit…** renamed it and changed the URI (default flag kept, toast
+shown), and **Delete…** removed it; deleting the in-use connection switched the
+app back to Podman's default engine. Stats verified on
 running containers (graphs update, history survives tab switches) and on a
 stopped container (notice instead of graphs). Build verified end to end through
 the modal: two-field entry with Tab switching, streamed STEP/COMMIT output,
@@ -1045,7 +1065,7 @@ packaging/install.sh` staged the binary, entry and seven icons and `--uninstall`
 removed all of them, the tarball layout installed correctly into a throwaway
 `PREFIX` (including `mimeinfo.cache` and the icon cache), the archive contains
 LICENSE/README/ROADMAP/desktop/icons/installer with a matching `.sha256`, and
-`xprop -id <window> WM_CLASS` reports `"podman-desktop-rs", "podman-desktop-rs"`
+`xprop -id <window> WM_CLASS` reports `"selkie", "selkie"`
 after adding `app_id` to the window options.
 
 Window icons were verified on 2026-11-06 on Cinnamon (X11): before the change
@@ -1058,7 +1078,7 @@ written before the window manager had finished reparenting the window, so the
 writer now retries until it reads the property back.
 
 Debian packaging was added on 2026-11-06: `packaging/build-deb.sh` produces
-`podman-desktop-rs_0.1.0-1_amd64.deb` (5.6 MB) with a stripped binary, desktop
+`selkie_0.1.0-1_amd64.deb` (5.6 MB) with a stripped binary, desktop
 entry, seven hicolor icons, man page and DEP-5 docs; `lintian` reports nothing;
 `desktop-file-validate` passes on the packaged entry; `dpkg-deb -c` shows
 `root/root` ownership and 755/644 modes; `apt-get -s install ./dist/…deb`
@@ -1255,11 +1275,11 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     including after an error (browse a nonexistent path via a stale listing).
     Switching to another image clears both tabs back to Summary.
 53. Packaging: `packaging/render-icons.sh` regenerates the seven PNGs;
-    `desktop-file-validate packaging/podman-desktop-rs.desktop` is clean;
+    `desktop-file-validate packaging/selkie.desktop` is clean;
     `DESTDIR=/tmp/stage packaging/install.sh` places the binary, entry and icons
     under `/tmp/stage/...` and `--uninstall` removes them. Extract a release
     archive elsewhere, run its `install.sh` with a throwaway `PREFIX`, launch the
-    installed binary and confirm `xprop WM_CLASS` reports `podman-desktop-rs` and
+    installed binary and confirm `xprop WM_CLASS` reports `selkie` and
     `xprop _NET_WM_ICON` lists 16–128 px icons (the window list and Alt-Tab then
     show the purple “P”, not a generic icon). Check the extracted icon renders
     and that the archive's `.sha256` matches. `packaging/build-deb.sh` builds a
@@ -1321,7 +1341,7 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     the current connection; About shows the app version, Podman version and
     settings path.
 61. Close to tray: click the window's X. The window disappears and leaves the
-    taskbar, but `pgrep -f '\./podman-desktop-rs$'` (or the process list) still
+    taskbar, but `pgrep -f '\./selkie$'` (or the process list) still
     shows it, `xwininfo -id <window> | grep 'Map State'` says `IsUnMapped`, the
     tray tooltip is still there and idle CPU stays at ~0. **Show window** in the
     tray — or launching the binary again — maps it back with the previous
@@ -1330,8 +1350,12 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     exist (or an SSH host that is down) with no identity. It appears with
     STATUS `unreachable` after the automatic probe; selecting it shows the
     REACHABILITY section with Podman's error, and **Check** toasts the result.
-    A bad name/URI or a missing identity file keeps the dialog open with a
-    toast. `podman system connection remove <name>` removes the test entry.
+    A bad name/URI, a missing identity file or an identity on `unix://` keeps
+    the dialog open with a toast. **Edit…** renames it and changes the URI; a
+    name that already exists is rejected. **Delete…** removes it after the
+    danger confirmation, and deleting the connection selected with **Use in this
+    app** switches the app back to Podman's default engine. `podman system
+    connection list` should agree after each step.
 
 ## File map
 

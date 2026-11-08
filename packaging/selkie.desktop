@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Selkie
+GenericName=Container Manager
+Comment=Native desktop client for Podman, built with Rust and GPUI
+Exec=selkie
+TryExec=selkie
+Icon=selkie
+Terminal=false
+Categories=Development;
+Keywords=podman;container;containers;image;pods;volumes;networks;
+StartupNotify=true
+StartupWMClass=selkie

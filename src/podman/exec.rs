@@ -1,5 +1,7 @@
 //! Running `podman`: the selected connection, actions and time-bounded queries.
 
+use std::os::unix::fs::FileTypeExt;
+
 use super::*;
 
 /// Upper bound for read-only queries (lists, inspect, info, stats).
@@ -141,9 +143,41 @@ pub fn connection() -> Option<String> {
     connection_slot().read().ok().and_then(|slot| slot.clone())
 }
 
+/// Point Podman at the session's ssh-agent when the app did not inherit
+/// `SSH_AUTH_SOCK` (a desktop launch does not always get a shell-exported one).
+///
+/// Only applies when the variable is unset: an explicit value always wins.
+pub(super) fn apply_ssh_agent(command: &mut Command) {
+    if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+        return;
+    }
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return;
+    };
+    if let Some(socket) = ssh_agent_socket(std::path::Path::new(&runtime)) {
+        command.env("SSH_AUTH_SOCK", socket);
+    }
+}
+
+/// Sockets for the agents Linux sessions usually run, in order: OpenSSH's
+/// systemd user unit (Fedora/Debian, then Arch's name for it), GNOME's
+/// gcr-ssh-agent (GNOME 46+) and the older GNOME Keyring agent.
+pub(super) fn ssh_agent_socket(runtime: &std::path::Path) -> Option<std::path::PathBuf> {
+    [
+        "openssh_agent",
+        "ssh-agent.socket",
+        "gcr/ssh",
+        "keyring/ssh",
+    ]
+    .into_iter()
+    .map(|candidate| runtime.join(candidate))
+    .find(|path| std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket()))
+}
+
 /// A `podman` command that targets the selected connection, if any.
 pub fn base_command() -> Command {
     let mut command = Command::new("podman");
+    apply_ssh_agent(&mut command);
     apply_connection(&mut command, connection().as_deref());
     command
 }

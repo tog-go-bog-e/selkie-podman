@@ -1,7 +1,7 @@
 use super::helpers::*;
 use super::*;
 
-impl PodmanDesktop {
+impl Selkie {
     // -----------------------------------------------------------------------
     // Machines and connections
     // -----------------------------------------------------------------------
@@ -68,6 +68,170 @@ impl PodmanDesktop {
             .ok();
         })
         .detach();
+    }
+
+    /// Update a connection: Podman re-adds it under the new name and URIs, and
+    /// a rename keeps the default flag. When the app uses it, the stored name
+    /// follows.
+    pub(super) fn update_connection(
+        &mut self,
+        old_name: String,
+        name: String,
+        uri: String,
+        identity: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy.is_some() {
+            self.toast(
+                ToastKind::Error,
+                "Wait for the running task before editing connections",
+                cx,
+            );
+            return;
+        }
+        if self.output_run.is_some() {
+            self.toast(
+                ToastKind::Error,
+                "Wait for the running build or compose command before editing connections",
+                cx,
+            );
+            return;
+        }
+        self.busy = Some(format!("Updating connection {old_name}…"));
+        cx.notify();
+
+        let in_use = self.uses_connection(&old_name);
+        let task_old = old_name.clone();
+        let task_name = name.clone();
+        let task_uri = uri.clone();
+        let task_identity = identity.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    podman::connection_update(
+                        &task_old,
+                        &task_name,
+                        &task_uri,
+                        task_identity.as_deref(),
+                    )
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                this.local_fetched = None;
+                match result {
+                    Ok(_) => {
+                        let explicit = this.settings.connection.as_deref() == Some(&old_name);
+                        if explicit && name != old_name {
+                            this.settings.connection = Some(name.clone());
+                            this.settings.save();
+                            podman::set_connection(Some(name.clone()));
+                        }
+                        this.connection_checks.remove(&old_name);
+                        this.toast(ToastKind::Success, format!("Updated connection {name}"), cx);
+                        if in_use {
+                            // The URI or identity may now point at another
+                            // engine; also refreshes and restarts events.
+                            this.reset_engine(cx);
+                        } else {
+                            this.refresh(cx);
+                        }
+                    }
+                    Err(error) => {
+                        this.toast(ToastKind::Error, error, cx);
+                        this.refresh(cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Remove a connection. If this app was using it, fall back to Podman's
+    /// default engine instead of leaving every command pointed at a name that
+    /// no longer exists.
+    pub(super) fn remove_connection(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            self.toast(
+                ToastKind::Error,
+                "Wait for the running task before deleting a connection",
+                cx,
+            );
+            return;
+        }
+        if self.output_run.is_some() {
+            self.toast(
+                ToastKind::Error,
+                "Wait for the running build or compose command before deleting a connection",
+                cx,
+            );
+            return;
+        }
+        self.busy = Some(format!("Removing connection {name}…"));
+        cx.notify();
+
+        let explicit = self.settings.connection.as_deref() == Some(name.as_str());
+        let in_use = self.uses_connection(&name);
+        let task_name = name.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { podman::connection_remove(&task_name) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.busy = None;
+                this.local_fetched = None;
+                this.connection_checks.remove(&name);
+                match result {
+                    Ok(_) => {
+                        if explicit {
+                            // Clears the engine data, restarts the event stream
+                            // and toasts the switch to Podman's default.
+                            this.use_connection(None, cx);
+                        } else if in_use {
+                            // It was Podman's default, which now falls back to
+                            // another engine.
+                            this.toast(
+                                ToastKind::Success,
+                                format!("Removed connection {name}; using Podman's new default"),
+                                cx,
+                            );
+                            this.reset_engine(cx);
+                        } else {
+                            this.toast(
+                                ToastKind::Success,
+                                format!("Removed connection {name}"),
+                                cx,
+                            );
+                            this.refresh(cx);
+                        }
+                    }
+                    Err(error) => {
+                        this.toast(ToastKind::Error, error, cx);
+                        this.refresh(cx);
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Whether the app's commands go to `name`: either selected explicitly, or
+    /// it is Podman's default and the app follows the default.
+    pub(super) fn uses_connection(&self, name: &str) -> bool {
+        match &self.settings.connection {
+            Some(selected) => selected == name,
+            None => self
+                .local
+                .connections
+                .iter()
+                .any(|connection| connection.default && connection.name == name),
+        }
     }
 
     /// Short label and color for a connection's reachability cell.
@@ -285,6 +449,18 @@ impl PodmanDesktop {
             }),
         ));
 
+        let edit_connection = connection.clone();
+        bar = bar.child(pill_button(
+            "connection-edit",
+            "Edit…",
+            true,
+            theme().muted,
+            theme().hover_bg,
+            cx.listener(move |this, _, window, cx| {
+                this.open_modal(Modal::edit_connection(&edit_connection), window, cx);
+            }),
+        ));
+
         if !in_use {
             let name = connection.name.clone();
             bar = bar.child(pill_button(
@@ -307,6 +483,18 @@ impl PodmanDesktop {
                 cx.listener(|this, _, _, cx| this.use_connection(None, cx)),
             ));
         }
+
+        let delete_name = connection.name.clone();
+        bar = bar.child(pill_button(
+            "connection-delete",
+            "Delete…",
+            self.output_run.is_none(),
+            theme().red,
+            theme().red_bg,
+            cx.listener(move |this, _, window, cx| {
+                this.open_modal(Modal::delete_connection(delete_name.clone()), window, cx);
+            }),
+        ));
 
         bar
     }

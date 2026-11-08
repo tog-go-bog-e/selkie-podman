@@ -359,6 +359,47 @@ impl RunField {
     }
 }
 
+/// The name/URI/identity form shared by the add and edit connection dialogs.
+#[derive(Clone)]
+struct ConnectionForm {
+    name: String,
+    uri: String,
+    identity: String,
+    field: ConnectionField,
+}
+
+impl ConnectionForm {
+    fn new(name: &str, uri: &str, identity: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            uri: uri.to_string(),
+            identity: identity.to_string(),
+            field: ConnectionField::Name,
+        }
+    }
+
+    fn field_mut(&mut self) -> &mut String {
+        match self.field {
+            ConnectionField::Name => &mut self.name,
+            ConnectionField::Uri => &mut self.uri,
+            ConnectionField::Identity => &mut self.identity,
+        }
+    }
+
+    fn trimmed_name(&self) -> String {
+        self.name.trim().to_string()
+    }
+
+    fn trimmed_uri(&self) -> String {
+        self.uri.trim().to_string()
+    }
+
+    /// `None` when left empty: Podman then uses the SSH agent.
+    fn identity(&self) -> Option<String> {
+        Some(self.identity.trim().to_string()).filter(|value| !value.is_empty())
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoginField {
     Registry,
@@ -606,10 +647,15 @@ enum Modal {
         name: String,
     },
     CreateConnection {
+        form: ConnectionForm,
+    },
+    EditConnection {
+        /// The name currently stored in Podman's configuration.
+        original: String,
+        form: ConnectionForm,
+    },
+    DeleteConnection {
         name: String,
-        uri: String,
-        identity: String,
-        field: ConnectionField,
     },
     BuildImage {
         form: BuildForm,
@@ -746,11 +792,19 @@ impl Modal {
 
     fn create_connection() -> Self {
         Modal::CreateConnection {
-            name: String::new(),
-            uri: String::new(),
-            identity: String::new(),
-            field: ConnectionField::Name,
+            form: ConnectionForm::new("", "", ""),
         }
+    }
+
+    fn edit_connection(connection: &Connection) -> Self {
+        Modal::EditConnection {
+            original: connection.name.clone(),
+            form: ConnectionForm::new(&connection.name, &connection.uri, &connection.identity),
+        }
+    }
+
+    fn delete_connection(name: impl Into<String>) -> Self {
+        Modal::DeleteConnection { name: name.into() }
     }
 }
 
@@ -933,7 +987,7 @@ fn kill_with_parent(command: &mut Command) {
 #[cfg(not(target_os = "linux"))]
 fn kill_with_parent(_command: &mut Command) {}
 
-pub struct PodmanDesktop {
+pub struct Selkie {
     tab: Tab,
     settings: Settings,
     snapshot: Snapshot,
@@ -1033,7 +1087,7 @@ pub struct PodmanDesktop {
     next_toast_id: u64,
 }
 
-impl PodmanDesktop {
+impl Selkie {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let settings = Settings::load();
         set_kind(settings.theme);
@@ -1272,7 +1326,7 @@ fn inspect_kind(selection: &Selection) -> Option<podman::InspectKind> {
     }
 }
 
-impl Render for PodmanDesktop {
+impl Render for Selkie {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.rebuild_filter();
         self.viewport_width = f32::from(window.bounds().size.width);

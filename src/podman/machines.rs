@@ -277,6 +277,7 @@ pub fn probe_connection(name: &str) -> Result<(), String> {
         return Err("connection name cannot be empty".to_string());
     }
     let mut command = Command::new("podman");
+    apply_ssh_agent(&mut command);
     command.args([
         "--connection",
         name,
@@ -338,12 +339,17 @@ pub fn connection_add_command(
         .filter(|value| !value.is_empty())
         .map(expand_home);
     if let Some(identity) = &identity {
+        if uri.starts_with("unix://") {
+            return Err("an identity file only applies to ssh:// connections".to_string());
+        }
         if !std::path::Path::new(identity).is_file() {
             return Err(format!("identity file not found: {identity}"));
         }
     }
 
+    // For ssh:// URIs Podman dials the host while adding, so it needs the agent.
     let mut command = Command::new("podman");
+    apply_ssh_agent(&mut command);
     command.args(["system", "connection", "add"]);
     if let Some(identity) = &identity {
         command.args(["--identity", identity]);
@@ -355,6 +361,53 @@ pub fn connection_add_command(
 pub fn connection_add(name: &str, uri: &str, identity: Option<&str>) -> Result<String, String> {
     let command = connection_add_command(name, uri, identity)?;
     execute(command, &format!("system connection add {name}"))
+}
+
+/// Update a connection in place. Podman has no `edit`, but re-running `add`
+/// with an existing name replaces its URI and identity; a rename keeps the
+/// default flag, so it is applied before the update.
+///
+/// A rename onto a name that is already configured is refused (checked against
+/// Podman's current list, not the UI's), since `add` would overwrite that
+/// connection. If `add` fails after a rename, the rename is rolled back so the
+/// configuration is left as it was.
+pub fn connection_update(
+    old_name: &str,
+    name: &str,
+    uri: &str,
+    identity: Option<&str>,
+) -> Result<String, String> {
+    let command = connection_add_command(name, uri, identity)?;
+    let old_name = old_name.trim();
+    let name = name.trim();
+    if old_name == name {
+        return execute(command, &format!("system connection add {name}"));
+    }
+
+    if connection_list()?
+        .iter()
+        .any(|connection| connection.name == name)
+    {
+        return Err(format!("a connection named {name} already exists"));
+    }
+    run_local(&["system", "connection", "rename", old_name, name])?;
+    execute(command, &format!("system connection add {name}")).map_err(|error| {
+        match run_local(&["system", "connection", "rename", name, old_name]) {
+            Ok(_) => error,
+            Err(rollback) => format!(
+                "{error} (the connection is now named {name}; renaming it back failed: {rollback})"
+            ),
+        }
+    })
+}
+
+/// Remove a connection from Podman's configuration. Local, like `add`.
+pub fn connection_remove(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("connection name cannot be empty".to_string());
+    }
+    run_local(&["system", "connection", "remove", name])
 }
 
 /// `~` is expanded here because the command is spawned without a shell.

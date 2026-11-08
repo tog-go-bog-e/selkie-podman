@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install Podman Desktop (Rust edition) for the current user.
+# Install Selkie for the current user.
 #
 # Works both from the source tree (packaging/install.sh) and from a release
 # tarball (install.sh at the archive root).
@@ -20,12 +20,12 @@ DESTDIR=${DESTDIR:-}
 SIZES="16 32 48 64 128 256 512"
 
 # Locate the assets in either layout.
-if [ -x "$HERE/podman-desktop-rs" ]; then
-    BIN=$HERE/podman-desktop-rs
-elif [ -x "$HERE/../target/release/podman-desktop-rs" ]; then
-    BIN=$HERE/../target/release/podman-desktop-rs
+if [ -x "$HERE/selkie" ]; then
+    BIN=$HERE/selkie
+elif [ -x "$HERE/../target/release/selkie" ]; then
+    BIN=$HERE/../target/release/selkie
 else
-    echo "error: no podman-desktop-rs binary found; run 'cargo build --release' first" >&2
+    echo "error: no selkie binary found; run 'cargo build --release' first" >&2
     exit 1
 fi
 
@@ -38,12 +38,12 @@ else
     exit 1
 fi
 
-if [ -f "$HERE/podman-desktop-rs.desktop" ]; then
-    DESKTOP=$HERE/podman-desktop-rs.desktop
-elif [ -f "$HERE/packaging/podman-desktop-rs.desktop" ]; then
-    DESKTOP=$HERE/packaging/podman-desktop-rs.desktop
+if [ -f "$HERE/selkie.desktop" ]; then
+    DESKTOP=$HERE/selkie.desktop
+elif [ -f "$HERE/packaging/selkie.desktop" ]; then
+    DESKTOP=$HERE/packaging/selkie.desktop
 else
-    echo "error: podman-desktop-rs.desktop not found" >&2
+    echo "error: selkie.desktop not found" >&2
     exit 1
 fi
 
@@ -59,36 +59,36 @@ refresh_caches() {
 }
 
 uninstall() {
-    rm -f "$DESTDIR$BINDIR/podman-desktop-rs"
-    rm -f "$DESTDIR$APPDIR/podman-desktop-rs.desktop"
+    rm -f "$DESTDIR$BINDIR/selkie"
+    rm -f "$DESTDIR$APPDIR/selkie.desktop"
     for size in $SIZES; do
-        rm -f "$DESTDIR$ICONDIR/${size}x${size}/apps/podman-desktop-rs.png"
+        rm -f "$DESTDIR$ICONDIR/${size}x${size}/apps/selkie.png"
     done
     refresh_caches
-    echo "Removed podman-desktop-rs from $DESTDIR$PREFIX"
+    echo "Removed selkie from $DESTDIR$PREFIX"
 }
 
 install_all() {
-    install -Dm755 "$BIN" "$DESTDIR$BINDIR/podman-desktop-rs"
-    install -Dm644 "$DESKTOP" "$DESTDIR$APPDIR/podman-desktop-rs.desktop"
+    install -Dm755 "$BIN" "$DESTDIR$BINDIR/selkie"
+    install -Dm644 "$DESKTOP" "$DESTDIR$APPDIR/selkie.desktop"
     for size in $SIZES; do
-        source_icon="$ICONS/podman-desktop-rs-$size.png"
+        source_icon="$ICONS/selkie-$size.png"
         if [ ! -f "$source_icon" ]; then
             echo "error: missing $source_icon (run packaging/render-icons.sh)" >&2
             exit 1
         fi
         install -Dm644 "$source_icon" \
-            "$DESTDIR$ICONDIR/${size}x${size}/apps/podman-desktop-rs.png"
+            "$DESTDIR$ICONDIR/${size}x${size}/apps/selkie.png"
     done
     refresh_caches
 
     echo "Installed:"
-    echo "  $DESTDIR$BINDIR/podman-desktop-rs"
-    echo "  $DESTDIR$APPDIR/podman-desktop-rs.desktop"
-    echo "  $DESTDIR$ICONDIR/<size>/apps/podman-desktop-rs.png"
+    echo "  $DESTDIR$BINDIR/selkie"
+    echo "  $DESTDIR$APPDIR/selkie.desktop"
+    echo "  $DESTDIR$ICONDIR/<size>/apps/selkie.png"
     case ":$PATH:" in
         *":$BINDIR:"*) ;;
-        *) echo "note: $BINDIR is not in PATH; add it to launch 'podman-desktop-rs' directly" ;;
+        *) echo "note: $BINDIR is not in PATH; add it to launch 'selkie' directly" ;;
     esac
 }
 

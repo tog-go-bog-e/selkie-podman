@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl PodmanDesktop {
+impl Selkie {
     // -----------------------------------------------------------------------
     // Selection, logs and commands
     // -----------------------------------------------------------------------
@@ -76,9 +76,20 @@ impl PodmanDesktop {
         self.settings.connection = name.clone();
         self.settings.save();
         podman::set_connection(name.clone());
+        self.reset_engine(cx);
 
-        // The previous engine's data is meaningless now; start from empty and
-        // keep the local machine/connection lists.
+        let message = match &name {
+            Some(name) => format!("Using connection {name}"),
+            None => "Using the Podman default engine".to_string(),
+        };
+        self.toast(ToastKind::Success, message, cx);
+        cx.notify();
+    }
+
+    /// The engine behind the app changed (another connection, or the current
+    /// one now points elsewhere): drop the previous engine's data, streams and
+    /// selection, keep the local machine/connection lists, and start over.
+    pub(super) fn reset_engine(&mut self, cx: &mut Context<Self>) {
         self.stop_logs();
         self.stop_terminal();
         self.stop_events();
@@ -96,13 +107,6 @@ impl PodmanDesktop {
         self.raw = None;
         self.refresh(cx);
         self.start_events(cx);
-
-        let message = match &name {
-            Some(name) => format!("Using connection {name}"),
-            None => "Using the Podman default engine".to_string(),
-        };
-        self.toast(ToastKind::Success, message, cx);
-        cx.notify();
     }
 
     pub(super) fn machine_action(

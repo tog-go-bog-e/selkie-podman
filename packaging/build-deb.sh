@@ -1,12 +1,12 @@
 #!/bin/sh
 # Build a Debian package:
-#   dist/podman-desktop-rs_<version>_<arch>.deb
+#   dist/selkie_<version>_<arch>.deb
 #
-# The package installs the binary as /usr/bin/podman-desktop-rs, the desktop
-# entry as /usr/share/applications/podman-desktop-rs.desktop and the icons into
+# The package installs the binary as /usr/bin/selkie, the desktop
+# entry as /usr/share/applications/selkie.desktop and the icons into
 # the hicolor theme, so the app shows up in the desktop menu after:
 #
-#   sudo apt install ./dist/podman-desktop-rs_<version>_<arch>.deb
+#   sudo apt install ./dist/selkie_<version>_<arch>.deb
 #
 # Only dpkg-deb is required. When dpkg-shlibdeps (dpkg-dev) is available the
 # shared-library dependencies are computed from the binary instead of guessed.
@@ -30,10 +30,10 @@ ARCH=$(dpkg --print-architecture)
 # Cargo's version is the upstream version; the Debian revision is bumped when the
 # packaging itself changes.
 DEB_VERSION="${VERSION}-${DEB_REVISION:-1}"
-NAME="podman-desktop-rs_${DEB_VERSION}_${ARCH}"
+NAME="selkie_${DEB_VERSION}_${ARCH}"
 STAGE="dist/deb/$NAME"
 OUT="dist/$NAME.deb"
-PKG=podman-desktop-rs
+PKG=selkie
 DOC="$STAGE/usr/share/doc/$PKG"
 
 # The Maintainer field (and the changelog/copyright) is published inside the
@@ -52,7 +52,7 @@ fi
 echo "Maintainer: $MAINTAINER (override with DEB_MAINTAINER)"
 
 for size in 16 32 48 64 128 256 512; do
-    if [ ! -f "packaging/icons/podman-desktop-rs-$size.png" ]; then
+    if [ ! -f "packaging/icons/selkie-$size.png" ]; then
         echo "error: missing icon; run packaging/render-icons.sh" >&2
         exit 1
     fi
@@ -69,7 +69,7 @@ if command -v dpkg-shlibdeps >/dev/null 2>&1; then
     mkdir -p "$TMP/debian"
     printf 'Source: %s\nMaintainer: %s\n\nPackage: %s\nArchitecture: any\nDescription: local build\n local build\n' \
         "$PKG" "$MAINTAINER" "$PKG" > "$TMP/debian/control"
-    SHLIBS=$(cd "$TMP" && dpkg-shlibdeps -O -e"$CRATE/target/release/podman-desktop-rs" 2>/dev/null \
+    SHLIBS=$(cd "$TMP" && dpkg-shlibdeps -O -e"$CRATE/target/release/selkie" 2>/dev/null \
         | sed -n 's/^shlibs:Depends=//p')
 fi
 case "$SHLIBS" in
@@ -84,19 +84,19 @@ echo "Staging the package tree…"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/bin" "$STAGE/usr/share/applications" "$DOC"
 
-install -m755 target/release/podman-desktop-rs "$STAGE/usr/bin/"
+install -m755 target/release/selkie "$STAGE/usr/bin/"
 # Debian wants stripped binaries in the archive; the build artifact is left
 # untouched for debugging.
 if command -v strip >/dev/null 2>&1; then
-    strip --strip-unneeded "$STAGE/usr/bin/podman-desktop-rs"
+    strip --strip-unneeded "$STAGE/usr/bin/selkie"
 fi
-install -m644 packaging/podman-desktop-rs.desktop "$STAGE/usr/share/applications/"
+install -m644 packaging/selkie.desktop "$STAGE/usr/share/applications/"
 mkdir -p "$STAGE/usr/share/man/man1"
-gzip -9n -c packaging/podman-desktop-rs.1 > "$STAGE/usr/share/man/man1/podman-desktop-rs.1.gz"
-chmod 644 "$STAGE/usr/share/man/man1/podman-desktop-rs.1.gz"
+gzip -9n -c packaging/selkie.1 > "$STAGE/usr/share/man/man1/selkie.1.gz"
+chmod 644 "$STAGE/usr/share/man/man1/selkie.1.gz"
 for size in 16 32 48 64 128 256 512; do
-    install -Dm644 "packaging/icons/podman-desktop-rs-$size.png" \
-        "$STAGE/usr/share/icons/hicolor/${size}x${size}/apps/podman-desktop-rs.png"
+    install -Dm644 "packaging/icons/selkie-$size.png" \
+        "$STAGE/usr/share/icons/hicolor/${size}x${size}/apps/selkie.png"
 done
 install -m644 README.md ROADMAP.md "$DOC/"
 

@@ -766,9 +766,9 @@ fn builds_connection_add_commands() {
 
     // An identity file is passed before the name and URL, and must exist.
     let identity = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
-    let command =
-        connection_add_command("local", "unix:///run/podman/podman.sock", Some(&identity))
-            .expect("connection add with identity");
+    let uri = "ssh://me@host:22/run/user/1000/podman/podman.sock";
+    let command = connection_add_command("remote", uri, Some(&identity))
+        .expect("connection add with identity");
     let args: Vec<String> = command
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -781,8 +781,8 @@ fn builds_connection_add_commands() {
             "add",
             "--identity",
             identity.as_str(),
-            "local",
-            "unix:///run/podman/podman.sock"
+            "remote",
+            uri
         ]
     );
 
@@ -794,12 +794,53 @@ fn builds_connection_add_commands() {
     assert!(
         connection_add_command("dev", "ssh://host/sock", Some("/definitely/not/here")).is_err()
     );
+    // Podman rejects an identity for unix-socket connections.
+    assert!(
+        connection_add_command("dev", "unix:///run/podman/podman.sock", Some(&identity)).is_err()
+    );
+    // Updates validate the new value before touching the configuration.
+    assert!(connection_update("old", "new", "tcp://host:2376", None).is_err());
+    assert!(connection_update("old", "new", "", None).is_err());
+    assert!(connection_remove(" ").is_err());
 
     assert_eq!(
         validate_connection_uri(" unix:///run/podman/podman.sock "),
         Ok("unix:///run/podman/podman.sock")
     );
     assert!(probe_connection(" ").is_err());
+}
+
+#[test]
+fn finds_an_ssh_agent_socket_in_the_runtime_dir() {
+    let dir = std::env::temp_dir().join(format!("pdr-agent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("keyring")).unwrap();
+    assert_eq!(ssh_agent_socket(&dir), None);
+
+    // The candidate only counts once a socket is bound there.
+    let socket = dir.join("openssh_agent");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    assert_eq!(ssh_agent_socket(&dir), Some(socket));
+    drop(listener);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn finds_gnome_and_arch_ssh_agent_sockets() {
+    for candidate in ["gcr/ssh", "ssh-agent.socket"] {
+        let dir = std::env::temp_dir().join(format!(
+            "pdr-agent-{}-{}",
+            std::process::id(),
+            candidate.replace('/', "-")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("gcr")).unwrap();
+        let socket = dir.join(candidate);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert_eq!(ssh_agent_socket(&dir), Some(socket), "{candidate}");
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]

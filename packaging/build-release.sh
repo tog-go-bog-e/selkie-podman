@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build a distributable release archive:
-#   dist/podman-desktop-rs-<version>-<target>.tar.gz
+#   dist/selkie-<version>-<target>.tar.gz
 #
 # The archive contains the binary, docs, desktop entry, icons and an installer
 # that works from the extracted directory.
@@ -15,11 +15,11 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 TARGET=$(rustc -vV | sed -n 's/^host: //p')
-NAME="podman-desktop-rs-$VERSION-$TARGET"
+NAME="selkie-$VERSION-$TARGET"
 STAGE="dist/$NAME"
 
 for size in 16 32 48 64 128 256 512; do
-    if [ ! -f "packaging/icons/podman-desktop-rs-$size.png" ]; then
+    if [ ! -f "packaging/icons/selkie-$size.png" ]; then
         echo "error: missing icon; run packaging/render-icons.sh" >&2
         exit 1
     fi
@@ -31,10 +31,10 @@ cargo build --release
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
-install -m755 target/release/podman-desktop-rs "$STAGE/"
+install -m755 target/release/selkie "$STAGE/"
 install -m644 README.md ROADMAP.md "$STAGE/"
 install -m755 packaging/install.sh "$STAGE/install.sh"
-install -m644 packaging/podman-desktop-rs.desktop "$STAGE/"
+install -m644 packaging/selkie.desktop "$STAGE/"
 cp -R packaging/icons "$STAGE/icons"
 for license in LICENSE ../LICENSE; do
     if [ -f "$license" ]; then

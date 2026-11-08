@@ -7,7 +7,7 @@ use super::settings::{
 use super::theme::{current_kind, ThemeKind};
 use super::*;
 
-impl PodmanDesktop {
+impl Selkie {
     // -----------------------------------------------------------------------
     // Settings page
     // -----------------------------------------------------------------------

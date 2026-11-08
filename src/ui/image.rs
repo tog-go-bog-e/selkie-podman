@@ -9,7 +9,7 @@ const MAX_FILE_ROWS: usize = 400;
 /// Lines rendered for a text file preview.
 const MAX_FILE_LINES: usize = 2000;
 
-impl PodmanDesktop {
+impl Selkie {
     // -----------------------------------------------------------------------
     // Image history and file browser
     // -----------------------------------------------------------------------

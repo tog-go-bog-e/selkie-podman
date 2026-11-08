@@ -1,10 +1,10 @@
-.TH PODMAN-DESKTOP-RS 1
+.TH SELKIE 1
 .SH NAME
-podman-desktop-rs \- lightweight Podman Desktop client built with Rust and GPUI
+selkie \- native desktop client for Podman, built with Rust and GPUI
 .SH SYNOPSIS
-.B podman-desktop-rs
+.B selkie
 .SH DESCRIPTION
-.B podman-desktop-rs
+.B selkie
 is a small desktop application for the local Podman engine. It drives the
 .B podman
 CLI and lists containers, images, volumes, networks, secrets, pods, compose
@@ -14,10 +14,10 @@ dashboard and the usual resource actions.
 Launching it again while it is running raises the existing window and exits.
 .SH FILES
 .TP
-.I ~/.config/podman-desktop-rs/settings.json
+.I ~/.config/selkie/settings.json
 Window geometry, panel widths, theme and the selected connection.
 .TP
-.I ~/.local/share/applications/podman-desktop-rs.desktop
+.I ~/.local/share/applications/selkie.desktop
 Desktop entry installed by the user-level installer; the Debian package puts
 the same file in /usr/share/applications instead.
 .SH SEE ALSO

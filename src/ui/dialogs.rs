@@ -13,7 +13,7 @@ type ModalSpec<'a> = (
     bool,
 );
 
-impl PodmanDesktop {
+impl Selkie {
     // Status bar, toasts and modal
     // -----------------------------------------------------------------------
 
@@ -860,6 +860,33 @@ impl PodmanDesktop {
                         }),
                     ));
 
+                    let edit_connection = connection.clone();
+                    items = items.child(menu_item(
+                        "ctx-connection-edit",
+                        "Edit connection…",
+                        !busy,
+                        false,
+                        cx.listener(move |this, _, window, cx| {
+                            this.close_context_menu(cx);
+                            this.open_modal(Modal::edit_connection(&edit_connection), window, cx);
+                        }),
+                    ));
+                    let delete_name = connection.name.clone();
+                    items = items.child(menu_item(
+                        "ctx-connection-delete",
+                        "Delete connection…",
+                        !busy && self.output_run.is_none(),
+                        true,
+                        cx.listener(move |this, _, window, cx| {
+                            this.close_context_menu(cx);
+                            this.open_modal(
+                                Modal::delete_connection(delete_name.clone()),
+                                window,
+                                cx,
+                            );
+                        }),
+                    ));
+
                     let uri = connection.uri.clone();
                     items = items.child(menu_item(
                         "ctx-connection-copy-uri",
@@ -1278,34 +1305,35 @@ impl PodmanDesktop {
                 "Create",
                 false,
             ),
-            Modal::CreateConnection {
-                name,
-                uri,
-                identity,
-                ..
-            } => (
+            Modal::CreateConnection { form } => (
                 "Add connection",
                 Some(
-                    "Runs `podman system connection add`. For SSH, use the remote Podman socket (ssh://user@host:22/run/user/1000/podman/podman.sock); credentials come from the SSH agent or the identity file."
+                    "Runs `podman system connection add`. For SSH, use the remote Podman socket (ssh://user@host:22/run/user/1000/podman/podman.sock). Leave the identity empty to use the running SSH agent; interactive password prompts are not supported."
                         .to_string(),
                 ),
-                vec![
-                    ("Name", name.as_str(), "e.g. workstation", true),
-                    (
-                        "URI",
-                        uri.as_str(),
-                        "ssh://user@host:22/run/user/1000/podman/podman.sock",
-                        true,
-                    ),
-                    (
-                        "Identity (optional)",
-                        identity.as_str(),
-                        "~/.ssh/id_ed25519",
-                        false,
-                    ),
-                ],
+                connection_form_fields(form),
                 "Add",
                 false,
+            ),
+            Modal::EditConnection { original, form } => (
+                "Edit connection",
+                Some(format!(
+                    "Updates “{original}” with `podman system connection add` (renaming it first when the name changes). Clearing the identity makes Podman use the running SSH agent; interactive password prompts are not supported.{}",
+                    machine_connection_warning(original)
+                )),
+                connection_form_fields(form),
+                "Save",
+                false,
+            ),
+            Modal::DeleteConnection { name } => (
+                "Delete connection?",
+                Some(format!(
+                    "“{name}” will be removed from Podman's configuration (`podman system connection remove`). Containers are not affected. If this app is using it, it switches back to Podman's default engine.{}",
+                    machine_connection_warning(name)
+                )),
+                Vec::new(),
+                "Delete",
+                true,
             ),
             Modal::DeleteMachine { name } => (
                 "Delete machine?",
@@ -1326,7 +1354,9 @@ impl PodmanDesktop {
             Modal::CreateNetwork { field, .. } => field.index(),
             Modal::CreatePod { field, .. } => field.index(),
             Modal::CreateMachine { field, .. } => field.index(),
-            Modal::CreateConnection { field, .. } => field.index(),
+            Modal::CreateConnection { form } | Modal::EditConnection { form, .. } => {
+                form.field.index()
+            }
             _ => 0,
         };
         let streaming = matches!(
@@ -1441,8 +1471,11 @@ impl PodmanDesktop {
                                     Some(Modal::CreateMachine { field, .. }) => {
                                         *field = MachineField::from_index(index);
                                     }
-                                    Some(Modal::CreateConnection { field, .. }) => {
-                                        *field = ConnectionField::from_index(index);
+                                    Some(
+                                        Modal::CreateConnection { form }
+                                        | Modal::EditConnection { form, .. },
+                                    ) => {
+                                        form.field = ConnectionField::from_index(index);
                                     }
                                     _ => {}
                                 }
@@ -1873,6 +1906,35 @@ impl PodmanDesktop {
             .items_center()
             .justify_center()
             .child(dialog)
+    }
+}
+
+/// The rows of the add/edit connection form.
+fn connection_form_fields(form: &ConnectionForm) -> Vec<(&'static str, &str, &'static str, bool)> {
+    vec![
+        ("Name", form.name.as_str(), "e.g. workstation", true),
+        (
+            "URI",
+            form.uri.as_str(),
+            "ssh://user@host:22/run/user/1000/podman/podman.sock",
+            true,
+        ),
+        (
+            "Identity (optional)",
+            form.identity.as_str(),
+            "empty = ssh-agent, or ~/.ssh/id_ed25519",
+            false,
+        ),
+    ]
+}
+
+/// `podman machine` creates and owns its `podman-machine-*` connections;
+/// changing them can leave the machine unreachable until it is re-initialised.
+fn machine_connection_warning(name: &str) -> &'static str {
+    if name.starts_with("podman-machine-") {
+        " Warning: this connection belongs to a Podman machine, which expects it unchanged."
+    } else {
+        ""
     }
 }
 

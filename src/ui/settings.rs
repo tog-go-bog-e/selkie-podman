@@ -214,8 +214,17 @@ pub fn load() -> Settings {
     let Some(path) = settings_path() else {
         return Settings::default();
     };
-    std::fs::read_to_string(path)
-        .ok()
+    // Before the rename to Selkie, settings lived under `podman-desktop-rs/`.
+    // Read them from there until the first save writes the new location.
+    let contents = std::fs::read_to_string(&path).ok().or_else(|| {
+        let legacy = path
+            .parent()?
+            .parent()?
+            .join(LEGACY_DIR)
+            .join("settings.json");
+        std::fs::read_to_string(legacy).ok()
+    });
+    contents
         .and_then(|contents| serde_json::from_str(&contents).ok())
         .unwrap_or_default()
 }
@@ -258,12 +267,15 @@ pub fn path() -> Option<PathBuf> {
     settings_path()
 }
 
+/// The settings directory's name before the project was renamed to Selkie.
+const LEGACY_DIR: &str = "podman-desktop-rs";
+
 fn settings_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(base.join("podman-desktop-rs").join("settings.json"))
+    Some(base.join("selkie").join("settings.json"))
 }
 
 #[cfg(test)]
