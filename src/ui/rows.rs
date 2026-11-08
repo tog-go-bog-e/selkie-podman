@@ -1,3 +1,4 @@
+use super::bulk::BULK_CHECKBOX_WIDTH;
 use super::helpers::*;
 use super::*;
 
@@ -317,15 +318,22 @@ impl Selkie {
     fn image_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let image = &self.snapshot.images[ix];
         let selected = matches!(&self.selection, Some(Selection::Image(id)) if id == &image.id);
+        let multi = self.multi_mode;
+        let selection = Selection::Image(image.id.clone());
+        let checked = multi && self.is_multi(&selection);
+        let highlighted = if multi { checked } else { selected };
         let compact = self.selection.is_some();
         let fixed_widths = if compact {
             90.0 + 104.0
         } else {
             104.0 + 90.0 + 104.0 + 150.0
         };
-        let name_width = (self.list_content_width() - fixed_widths).max(80.0);
+        let content_width =
+            self.list_content_width() - if multi { BULK_CHECKBOX_WIDTH } else { 0.0 };
+        let name_width = (content_width - fixed_widths).max(80.0);
         let image_id = image.id.clone();
         let menu_id = image.id.clone();
+        let click_selection = selection.clone();
         let group = SharedString::from(format!("img-row-{ix}"));
 
         let mut row = div()
@@ -341,11 +349,17 @@ impl Selkie {
             .border_b_1()
             .border_color(rgb(theme().border))
             .cursor_pointer()
-            .when(selected, |el| el.bg(rgb(theme().accent_soft)))
-            .when(!selected, |el| {
+            .when(highlighted, |el| el.bg(rgb(theme().accent_soft)))
+            .when(!highlighted, |el| {
                 el.hover(|style| style.bg(rgb(theme().hover_bg)))
             })
-            .on_click(cx.listener(move |this, _, _, cx| this.select_image(image_id.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.multi_mode {
+                    this.toggle_multi(click_selection.clone(), cx);
+                } else {
+                    this.select_image(image_id.clone(), cx);
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -356,29 +370,34 @@ impl Selkie {
                         cx,
                     )
                 }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .child(
-                        div()
-                            .w_full()
-                            .text_sm()
-                            .whitespace_nowrap()
-                            .truncate()
-                            .child(truncate_sm(&image.name, name_width)),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .text_xs()
-                            .text_color(rgb(theme().faint))
-                            .child(truncate_xs(&image.digest_short(), name_width)),
-                    ),
             );
+
+        if multi {
+            row = row.child(bulk_checkbox(checked));
+        }
+
+        row = row.child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.))
+                .child(
+                    div()
+                        .w_full()
+                        .text_sm()
+                        .whitespace_nowrap()
+                        .truncate()
+                        .child(truncate_sm(&image.name, name_width)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .text_xs()
+                        .text_color(rgb(theme().faint))
+                        .child(truncate_xs(&image.digest_short(), name_width)),
+                ),
+        );
 
         if !compact {
             row = row.child(muted_cell(image.id_short(), 104.));
@@ -389,7 +408,9 @@ impl Selkie {
         if !compact {
             row = row.child(muted_cell(image.created.clone(), 150.));
         }
-        row = row.child(self.image_row_actions(ix, image, cx));
+        if !multi {
+            row = row.child(self.image_row_actions(ix, image, cx));
+        }
         row.into_any_element()
     }
 
@@ -398,17 +419,24 @@ impl Selkie {
         let (color, color_bg) = state_colors(&container.state);
         let selected =
             matches!(&self.selection, Some(Selection::Container(id)) if id == &container.id);
+        let multi = self.multi_mode;
+        let selection = Selection::Container(container.id.clone());
+        let checked = multi && self.is_multi(&selection);
+        let highlighted = if multi { checked } else { selected };
         let compact = self.selection.is_some();
         let fixed_widths = if compact {
             104.0 + 140.0
         } else {
             104.0 + 140.0 + 160.0 + 104.0
         };
-        let flex_width = ((self.list_content_width() - fixed_widths) / 2.0).max(40.0);
+        let content_width =
+            self.list_content_width() - if multi { BULK_CHECKBOX_WIDTH } else { 0.0 };
+        let flex_width = ((content_width - fixed_widths) / 2.0).max(40.0);
         let name_width = flex_width;
         let image_width = flex_width;
-        let container_id = container.id.clone();
         let menu_id = container.id.clone();
+        let click_id = container.id.clone();
+        let click_selection = selection.clone();
         let group = SharedString::from(format!("row-{ix}"));
         let subtitle = match &container.compose {
             Some(compose) => match &compose.service {
@@ -433,13 +461,17 @@ impl Selkie {
             .border_b_1()
             .border_color(rgb(theme().border))
             .cursor_pointer()
-            .when(selected, |el| el.bg(rgb(theme().accent_soft)))
-            .when(!selected, |el| {
+            .when(highlighted, |el| el.bg(rgb(theme().accent_soft)))
+            .when(!highlighted, |el| {
                 el.hover(|style| style.bg(rgb(theme().hover_bg)))
             })
-            .on_click(
-                cx.listener(move |this, _, _, cx| this.select_container(container_id.clone(), cx)),
-            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.multi_mode {
+                    this.toggle_multi(click_selection.clone(), cx);
+                } else {
+                    this.select_container(click_id.clone(), cx);
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -450,7 +482,13 @@ impl Selkie {
                         cx,
                     )
                 }),
-            )
+            );
+
+        if multi {
+            row = row.child(bulk_checkbox(checked));
+        }
+
+        row = row
             .child(
                 div()
                     .flex()
@@ -498,7 +536,9 @@ impl Selkie {
                 .child(muted_cell(container.id_short(), 104.));
         }
 
-        row = row.child(self.container_row_actions(ix, container, cx));
+        if !multi {
+            row = row.child(self.container_row_actions(ix, container, cx));
+        }
         row.into_any_element()
     }
 
@@ -506,15 +546,22 @@ impl Selkie {
         let pod = &self.snapshot.pods[ix];
         let (color, color_bg) = state_colors(&pod.status);
         let selected = matches!(&self.selection, Some(Selection::Pod(id)) if id == &pod.id);
+        let multi = self.multi_mode;
+        let selection = Selection::Pod(pod.id.clone());
+        let checked = multi && self.is_multi(&selection);
+        let highlighted = if multi { checked } else { selected };
         let compact = self.selection.is_some();
         let fixed_widths = if compact {
             110.0 + 110.0
         } else {
             110.0 + 110.0 + 150.0 + 110.0
         };
-        let name_width = (self.list_content_width() - fixed_widths).max(80.0);
+        let content_width =
+            self.list_content_width() - if multi { BULK_CHECKBOX_WIDTH } else { 0.0 };
+        let name_width = (content_width - fixed_widths).max(80.0);
         let pod_id = pod.id.clone();
         let menu_id = pod.id.clone();
+        let click_selection = selection.clone();
         let group = SharedString::from(format!("pod-row-{ix}"));
 
         let mut row = div()
@@ -530,11 +577,17 @@ impl Selkie {
             .border_b_1()
             .border_color(rgb(theme().border))
             .cursor_pointer()
-            .when(selected, |el| el.bg(rgb(theme().accent_soft)))
-            .when(!selected, |el| {
+            .when(highlighted, |el| el.bg(rgb(theme().accent_soft)))
+            .when(!highlighted, |el| {
                 el.hover(|style| style.bg(rgb(theme().hover_bg)))
             })
-            .on_click(cx.listener(move |this, _, _, cx| this.select_pod(pod_id.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.multi_mode {
+                    this.toggle_multi(click_selection.clone(), cx);
+                } else {
+                    this.select_pod(pod_id.clone(), cx);
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -545,7 +598,13 @@ impl Selkie {
                         cx,
                     )
                 }),
-            )
+            );
+
+        if multi {
+            row = row.child(bulk_checkbox(checked));
+        }
+
+        row = row
             .child(
                 div()
                     .flex()
@@ -580,7 +639,9 @@ impl Selkie {
                 .child(muted_cell(pod.id_short(), 110.));
         }
 
-        row = row.child(self.pod_row_actions(ix, pod, cx));
+        if !multi {
+            row = row.child(self.pod_row_actions(ix, pod, cx));
+        }
         row.into_any_element()
     }
 
@@ -588,15 +649,22 @@ impl Selkie {
         let volume = &self.snapshot.volumes[ix];
         let selected =
             matches!(&self.selection, Some(Selection::Volume(name)) if name == &volume.name);
+        let multi = self.multi_mode;
+        let selection = Selection::Volume(volume.name.clone());
+        let checked = multi && self.is_multi(&selection);
+        let highlighted = if multi { checked } else { selected };
         let compact = self.selection.is_some();
         let fixed_widths = if compact {
             100.0 + 90.0
         } else {
             100.0 + 90.0 + 90.0 + 150.0
         };
-        let name_width = (self.list_content_width() - fixed_widths).max(80.0);
+        let content_width =
+            self.list_content_width() - if multi { BULK_CHECKBOX_WIDTH } else { 0.0 };
+        let name_width = (content_width - fixed_widths).max(80.0);
         let volume_name = volume.name.clone();
         let menu_name = volume.name.clone();
+        let click_selection = selection.clone();
         let group = SharedString::from(format!("volume-row-{ix}"));
 
         let mut row = div()
@@ -612,13 +680,17 @@ impl Selkie {
             .border_b_1()
             .border_color(rgb(theme().border))
             .cursor_pointer()
-            .when(selected, |el| el.bg(rgb(theme().accent_soft)))
-            .when(!selected, |el| {
+            .when(highlighted, |el| el.bg(rgb(theme().accent_soft)))
+            .when(!highlighted, |el| {
                 el.hover(|style| style.bg(rgb(theme().hover_bg)))
             })
-            .on_click(
-                cx.listener(move |this, _, _, cx| this.select_volume(volume_name.clone(), cx)),
-            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.multi_mode {
+                    this.toggle_multi(click_selection.clone(), cx);
+                } else {
+                    this.select_volume(volume_name.clone(), cx);
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -629,7 +701,13 @@ impl Selkie {
                         cx,
                     )
                 }),
-            )
+            );
+
+        if multi {
+            row = row.child(bulk_checkbox(checked));
+        }
+
+        row = row
             .child(
                 div()
                     .flex()
@@ -663,22 +741,31 @@ impl Selkie {
                 .child(muted_cell(volume.created.clone(), 150.));
         }
 
-        row = row.child(self.volume_row_actions(ix, volume, cx));
+        if !multi {
+            row = row.child(self.volume_row_actions(ix, volume, cx));
+        }
         row.into_any_element()
     }
 
     fn secret_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let secret = &self.snapshot.secrets[ix];
         let selected = matches!(&self.selection, Some(Selection::Secret(id)) if id == &secret.id);
+        let multi = self.multi_mode;
+        let selection = Selection::Secret(secret.id.clone());
+        let checked = multi && self.is_multi(&selection);
+        let highlighted = if multi { checked } else { selected };
         let compact = self.selection.is_some();
         let fixed_widths = if compact {
             150.0
         } else {
             100.0 + 150.0 + 150.0
         };
-        let name_width = (self.list_content_width() - fixed_widths).max(80.0);
+        let content_width =
+            self.list_content_width() - if multi { BULK_CHECKBOX_WIDTH } else { 0.0 };
+        let name_width = (content_width - fixed_widths).max(80.0);
         let select_id = secret.id.clone();
         let menu_id = secret.id.clone();
+        let click_selection = selection.clone();
         let group = SharedString::from(format!("secret-row-{ix}"));
 
         let mut row = div()
@@ -694,11 +781,17 @@ impl Selkie {
             .border_b_1()
             .border_color(rgb(theme().border))
             .cursor_pointer()
-            .when(selected, |el| el.bg(rgb(theme().accent_soft)))
-            .when(!selected, |el| {
+            .when(highlighted, |el| el.bg(rgb(theme().accent_soft)))
+            .when(!highlighted, |el| {
                 el.hover(|style| style.bg(rgb(theme().hover_bg)))
             })
-            .on_click(cx.listener(move |this, _, _, cx| this.select_secret(select_id.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.multi_mode {
+                    this.toggle_multi(click_selection.clone(), cx);
+                } else {
+                    this.select_secret(select_id.clone(), cx);
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -710,6 +803,7 @@ impl Selkie {
                     )
                 }),
             )
+            .when(multi, |el| el.child(bulk_checkbox(checked)))
             .child(
                 div()
                     .flex()
@@ -743,7 +837,9 @@ impl Selkie {
             row = row.child(muted_cell(secret.updated.clone(), 150.));
         }
 
-        row = row.child(self.secret_row_actions(ix, secret, cx));
+        if !multi {
+            row = row.child(self.secret_row_actions(ix, secret, cx));
+        }
         row.into_any_element()
     }
 
@@ -751,15 +847,22 @@ impl Selkie {
         let network = &self.snapshot.networks[ix];
         let selected =
             matches!(&self.selection, Some(Selection::Network(name)) if name == &network.name);
+        let multi = self.multi_mode;
+        let selection = Selection::Network(network.name.clone());
+        let checked = multi && self.is_multi(&selection);
+        let highlighted = if multi { checked } else { selected };
         let compact = self.selection.is_some();
         let fixed_widths = if compact {
             100.0 + 170.0
         } else {
             100.0 + 170.0 + 110.0 + 80.0
         };
-        let name_width = (self.list_content_width() - fixed_widths).max(80.0);
+        let content_width =
+            self.list_content_width() - if multi { BULK_CHECKBOX_WIDTH } else { 0.0 };
+        let name_width = (content_width - fixed_widths).max(80.0);
         let network_name = network.name.clone();
         let menu_name = network.name.clone();
+        let click_selection = selection.clone();
         let group = SharedString::from(format!("network-row-{ix}"));
 
         let mut row = div()
@@ -775,13 +878,17 @@ impl Selkie {
             .border_b_1()
             .border_color(rgb(theme().border))
             .cursor_pointer()
-            .when(selected, |el| el.bg(rgb(theme().accent_soft)))
-            .when(!selected, |el| {
+            .when(highlighted, |el| el.bg(rgb(theme().accent_soft)))
+            .when(!highlighted, |el| {
                 el.hover(|style| style.bg(rgb(theme().hover_bg)))
             })
-            .on_click(
-                cx.listener(move |this, _, _, cx| this.select_network(network_name.clone(), cx)),
-            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if this.multi_mode {
+                    this.toggle_multi(click_selection.clone(), cx);
+                } else {
+                    this.select_network(network_name.clone(), cx);
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -793,6 +900,7 @@ impl Selkie {
                     )
                 }),
             )
+            .when(multi, |el| el.child(bulk_checkbox(checked)))
             .child(
                 div()
                     .flex()
@@ -823,7 +931,9 @@ impl Selkie {
                 .child(cell(bool_label(network.dns), 80.));
         }
 
-        row = row.child(self.network_row_actions(ix, network, cx));
+        if !multi {
+            row = row.child(self.network_row_actions(ix, network, cx));
+        }
         row.into_any_element()
     }
 

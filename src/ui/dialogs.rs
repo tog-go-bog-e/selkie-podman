@@ -1,3 +1,4 @@
+use super::bulk::BulkKind;
 use super::helpers::*;
 use super::*;
 
@@ -12,6 +13,26 @@ type ModalSpec<'a> = (
     &'static str,
     bool,
 );
+
+/// Body of the bulk-delete confirmation: count, consequence and a preview of
+/// the names (long lists are truncated).
+fn bulk_delete_body(kind: BulkKind, items: &[(String, String)]) -> String {
+    let count = items.len();
+    let shown = items
+        .iter()
+        .take(8)
+        .map(|(_, name)| name.as_str())
+        .collect::<Vec<_>>();
+    let mut names = shown.join(", ");
+    if count > shown.len() {
+        names.push_str(&format!(" and {} more", count - shown.len()));
+    }
+    format!(
+        "{count} {} {} ({names}). This cannot be undone.",
+        kind.noun_for(count),
+        kind.consequence()
+    )
+}
 
 impl Selkie {
     // Status bar, toasts and modal
@@ -1023,6 +1044,13 @@ impl Selkie {
                 Some(format!(
                     "Network “{name}” will be force-removed. Connected containers may be affected."
                 )),
+                Vec::new(),
+                "Delete",
+                true,
+            ),
+            Modal::DeleteSelected { kind, items } => (
+                "Delete selected?",
+                Some(bulk_delete_body(*kind, items)),
                 Vec::new(),
                 "Delete",
                 true,

@@ -1,3 +1,4 @@
+use super::bulk::{BulkKind, BULK_CHECKBOX_WIDTH};
 use super::helpers::*;
 use super::*;
 
@@ -170,6 +171,10 @@ impl Selkie {
     }
 
     pub(super) fn toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let bulk = BulkKind::from_tab(self.tab);
+        if self.multi_mode && bulk.is_some() {
+            return self.bulk_toolbar(cx);
+        }
         let matches = self.visible_indices.len();
         let total = match self.tab {
             Tab::Dashboard => 0,
@@ -207,6 +212,19 @@ impl Selkie {
                                 .text_color(rgb(theme().faint))
                                 .child(format!("{matches} of {total}")),
                         )
+                    })
+                    .when(bulk.is_some(), |el| {
+                        el.child(pill_button(
+                            "multi-select",
+                            "Select",
+                            !busy,
+                            theme().muted,
+                            theme().hover_bg,
+                            cx.listener(|this, _, window, cx| {
+                                this.start_multi(cx);
+                                this.root_focus.focus(window);
+                            }),
+                        ))
                     })
                     .when(self.tab == Tab::Images, |el| {
                         el.child(pill_button(
@@ -414,9 +432,79 @@ impl Selkie {
             )
     }
 
+    /// The toolbar while rows are being checked: counts and the bulk actions
+    /// replace the usual search box and per-tab buttons.
+    fn bulk_toolbar(&self, cx: &mut Context<Self>) -> Div {
+        let count = self.multi.len();
+        let busy = self.busy.is_some();
+        let all = self.visible_indices.len();
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_6()
+            .pb_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(theme().text))
+                            .child(format!("{count} selected")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(rgb(theme().faint))
+                            .child("Click rows to choose what to delete."),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(pill_button(
+                        "bulk-select-all",
+                        "Select all",
+                        !busy && count < all,
+                        theme().muted,
+                        theme().hover_bg,
+                        cx.listener(|this, _, _, cx| this.select_all_visible(cx)),
+                    ))
+                    .child(pill_button(
+                        "bulk-clear",
+                        "Clear",
+                        !busy && count > 0,
+                        theme().muted,
+                        theme().hover_bg,
+                        cx.listener(|this, _, _, cx| this.clear_multi_selection(cx)),
+                    ))
+                    .child(pill_button_dyn(
+                        "bulk-delete",
+                        format!("Delete ({count})"),
+                        !busy && count > 0,
+                        theme().red,
+                        theme().red_bg,
+                        cx.listener(|this, _, window, cx| this.open_bulk_delete(window, cx)),
+                    ))
+                    .child(pill_button(
+                        "bulk-cancel",
+                        "Cancel",
+                        !busy,
+                        theme().muted,
+                        theme().hover_bg,
+                        cx.listener(|this, _, _, cx| this.cancel_multi(cx)),
+                    )),
+            )
+    }
+
     pub(super) fn table_header(&self, cx: &mut Context<Self>) -> Div {
         let compact = self.selection.is_some();
-        let header = div()
+        let mut header = div()
             .flex()
             .items_center()
             .h(px(32.))
@@ -427,6 +515,11 @@ impl Selkie {
             .text_xs()
             .text_color(rgb(theme().muted))
             .font_weight(FontWeight::SEMIBOLD);
+
+        // Keep the header columns aligned with the rows' checkbox.
+        if self.multi_mode && BulkKind::from_tab(self.tab).is_some() {
+            header = header.child(div().flex_shrink_0().w(px(BULK_CHECKBOX_WIDTH)));
+        }
 
         match (self.tab, compact) {
             (Tab::Dashboard | Tab::Accounts | Tab::Settings, _) => header,

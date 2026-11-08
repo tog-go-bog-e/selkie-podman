@@ -16,6 +16,10 @@ impl Selkie {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
 
+        if (modifiers.control || modifiers.platform) && key == "a" && self.multi_mode {
+            self.select_all_visible(cx);
+            return;
+        }
         if (modifiers.control || modifiers.platform) && key == "r" {
             self.refresh_dashboard(cx);
             return;
@@ -37,6 +41,8 @@ impl Selkie {
                     self.close_account_menu(cx);
                 } else if self.context_menu.is_some() {
                     self.close_context_menu(cx);
+                } else if self.multi_mode {
+                    self.cancel_multi(cx);
                 } else if self.selection.is_some() {
                     self.clear_selection();
                     cx.notify();
@@ -45,6 +51,9 @@ impl Selkie {
                     cx.notify();
                 }
             }
+            // Bulk selection is mouse-driven; Escape (above) and Ctrl/Cmd+A
+            // (below) are the only keys that apply while it is active.
+            _ if self.multi_mode => {}
             "/" => {
                 if matches!(self.tab, Tab::Dashboard | Tab::Accounts | Tab::Settings) {
                     return;
@@ -168,6 +177,11 @@ impl Selkie {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Rows are checkboxes while bulk selection is active; a per-row menu
+        // (and its single-item delete) would be confusing there.
+        if self.multi_mode {
+            return;
+        }
         self.root_focus.focus(window);
         match selection.clone() {
             Selection::Container(id) => self.select_container(id, cx),

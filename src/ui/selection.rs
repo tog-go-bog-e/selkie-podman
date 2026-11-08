@@ -156,6 +156,7 @@ impl Selkie {
         self.search.clear();
         self.account_menu = None;
         self.clear_selection();
+        self.clear_multi();
         cx.notify();
     }
 
@@ -179,6 +180,7 @@ impl Selkie {
         self.error = None;
         self.selection = None;
         self.pending_unlock = None;
+        self.clear_multi();
         self.details = DetailsState::None;
         self.details_tab = DetailsTab::Summary;
         self.raw_view = false;

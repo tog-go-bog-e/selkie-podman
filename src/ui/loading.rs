@@ -88,6 +88,7 @@ impl Selkie {
                         this.snapshot = snapshot;
                         this.error = None;
                         this.last_updated = Some(Instant::now());
+                        this.prune_multi();
                         if this.selection_is_gone() {
                             this.clear_selection();
                         }

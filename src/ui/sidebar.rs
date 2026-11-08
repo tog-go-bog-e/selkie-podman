@@ -80,6 +80,7 @@ impl Selkie {
                     this.search.clear();
                     this.account_menu = None;
                     this.clear_selection();
+                    this.clear_multi();
                     // The Dashboard data is only fetched while it is visible.
                     if tab == Tab::Dashboard {
                         this.refresh_dashboard(cx);

@@ -46,6 +46,11 @@ engine**.
   drag/double-click selection with copy (`Ctrl+Shift+C`) and paste
   (`Ctrl+Shift+V`, bracketed when the program asks). Containers belonging to a
   compose project show `project/service` under their name.
+- **Bulk delete**: on the container, image, pod, volume, network and secret
+  lists, **Select** turns rows into checkboxes; **Delete (N)** removes every
+  checked row in one confirmed action. **Select all** (or `Ctrl/Cmd+A`) checks
+  the visible rows, `Escape` or **Cancel** leaves the mode, and partial failures
+  are reported by name.
 - **Compose**: projects grouped from container labels (`com.docker.compose.*`
   and `io.podman.compose.*`), with running/total status, services, compose file
   and working directory. **Up** (`up -d`), **Restart**, **Build** and **Down**
@@ -520,6 +525,12 @@ prioritized next milestones and verification checklist.
 - Stats are only sampled while the Stats tab is visible, keep at most 120 samples
   (about four minutes at 2 s) and are not persisted. Offline/stopped containers
   show a notice instead of graphs.
+- Bulk delete runs one Podman command per checked row (Podman has no
+  multi-object delete that reports per-row results), so a large selection takes
+  a moment; the list refreshes once at the end and failures are reported by
+  name. Bulk selection is available on the container, image, pod, volume,
+  network and secret lists (not compose projects, machines or connections,
+  which keep their individual lifecycle dialogs).
 - The terminal resizes with the details pane (the grid is measured each frame and
   the pty is resized with `TIOCSWINSZ`, so full-screen programs reflow) and
   keeps 2000 lines of scrollback. It supports mouse-drag selection, double-click
@@ -590,8 +601,9 @@ prioritized next milestones and verification checklist.
   see them. Compose against a remote connection depends on the compose
   provider. Switching a connection is local to this app and never runs
   `podman system connection default`.
-- No multi-select, bulk actions or command palette yet. Sort is per tab, resets
-  on tab switch, and is not persisted.
+- Bulk delete exists on the container/image/pod/volume/network/secret lists;
+  there is no command palette. Sort is per tab, resets on tab switch, and is not
+  persisted.
 - The window **position** is not persisted (only its size and maximized state):
   GPUI exposes no reliable window origin on X11, and window managers apply
   requested positions inconsistently. Placement is left to the window manager.

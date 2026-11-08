@@ -140,8 +140,21 @@ pub(super) fn pill_button(
     bg: u32,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    pill_button_dyn(id, label, enabled, fg, bg, on_click)
+}
+
+/// Same as [`pill_button`] but with a label built at runtime (e.g. a count).
+pub(super) fn pill_button_dyn(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    fg: u32,
+    bg: u32,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let label = label.into();
     div()
-        .id(id)
+        .id(id.into())
         .px_3()
         .py_2()
         .rounded_md()
@@ -156,6 +169,32 @@ pub(super) fn pill_button(
                 .text_sm()
                 .text_color(rgb(if enabled { fg } else { theme().faint }))
                 .child(label),
+        )
+}
+
+/// A checkbox shown at the start of a row while bulk selection is active.
+pub(super) fn bulk_checkbox(checked: bool) -> Div {
+    div()
+        .flex_shrink_0()
+        .w(px(16.))
+        .h(px(16.))
+        .mr_2()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(if checked {
+            theme().accent
+        } else {
+            theme().border
+        }))
+        .when(checked, |el| el.bg(rgb(theme().accent_soft)))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(theme().accent))
+                .child(if checked { "✓" } else { "" }),
         )
 }
 

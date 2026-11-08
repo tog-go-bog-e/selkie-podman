@@ -1,6 +1,7 @@
 //! The GPUI view: sidebar, tables, details pane, actions and toasts.
 
 mod accounts;
+mod bulk;
 mod compose;
 mod dashboard;
 mod details;
@@ -676,6 +677,12 @@ enum Modal {
         id: String,
         name: String,
     },
+    /// Several checked rows from one list tab.
+    DeleteSelected {
+        kind: bulk::BulkKind,
+        /// `(Podman key, display name)` for each checked row.
+        items: Vec<(String, String)>,
+    },
     ComposeDown {
         project: ComposeProject,
     },
@@ -1066,6 +1073,10 @@ pub struct Selkie {
     drag_start_width: f32,
 
     selection: Option<Selection>,
+    /// Rows checked for a bulk action, in the order they were checked.
+    multi: Vec<Selection>,
+    /// Whether the current list is in bulk-selection mode.
+    multi_mode: bool,
     details_tab: DetailsTab,
     details: DetailsState,
     raw_view: bool,
@@ -1180,6 +1191,8 @@ impl Selkie {
             drag_start_width: 0.0,
 
             selection: None,
+            multi: Vec::new(),
+            multi_mode: false,
             details_tab: DetailsTab::Summary,
             details: DetailsState::None,
             raw_view: false,

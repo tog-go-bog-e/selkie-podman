@@ -647,6 +647,27 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       `top` on the alternate screen, `OSC 52` copy followed by `Ctrl+Shift+V`,
       and `DECSCUSR` steady-bar cursor
 
+### Done (bulk delete)
+
+- [x] **Select** on the container, image, pod, volume, network and secret lists
+      enters a checkbox mode: the details pane closes so the table spans the
+      window, row actions and the context menu are suppressed, and clicking a
+      row checks or unchecks it
+- [x] Bulk toolbar with `N selected`, **Select all**, **Clear**, **Delete (N)**
+      and **Cancel**; `Ctrl/Cmd+A` checks the visible rows and `Escape` leaves
+      the mode. The header gains a matching checkbox spacer so columns stay
+      aligned
+- [x] A single confirmation lists the selected names (truncated after eight)
+      and the resource-specific consequence; confirming runs one Podman removal
+      per row in a background task, keeps going after a failure, refreshes the
+      list once and reports partial failures by name
+- [x] Checked rows are pruned when a refresh removes them, and leaving the tab,
+      switching engines or entering the mode clears the set
+- [x] Verified end to end with two throwaway volumes: check both, confirm the
+      modal (`2 volumes will be force-removed…`), `Deleted 2 volumes` toast,
+      refreshed list, both gone from `podman volume ls`; also checked a
+      container row and cancelled without deleting it
+
 ### Current architecture
 
 | Concern | Implementation |
@@ -662,6 +683,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Lifecycle | Close handler + `Ctrl/Cmd+Q` + tray Quit; window size watched every 500 ms |
 | Updates | `podman events` stream (`src/ui/events.rs`) refreshes the snapshot; polling task with a configurable interval (3/5/10/30 s) remains as fallback |
 | Actions | `std::process::Command` (Podman CLI) or `bollard` (API engines) on a background executor, then refresh |
+| Bulk delete | `Select` on the six resource lists swaps rows for checkboxes (`multi_mode`/`multi` in `Selkie`); the confirmed set (`Modal::DeleteSelected`) removes one object per command in one background task, then refreshes and reports partial failures |
 | Creating | `podman run -d` from an image with validated name, ports, env, volumes and command (`src/podman.rs`) |
 | Creating resources | `podman volume create` / `network create` / `pod create` with validated optional flags; `podman kube play` streams through the shared output panel |
 | Pruning | `podman volume prune -f` / `network prune -f` behind a confirmation dialog |
@@ -1454,6 +1476,14 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     alternate screen and its inverse header render, `q` restores the shell.
     `printf '\033]52;c;aGVsbG8=\007'` then `Ctrl+Shift+V` pastes `hello`.
     `printf '\033[6 q'` draws a bar cursor.
+65. Bulk delete: with two throwaway volumes (`podman volume create
+    selkie-bulk-a` and `…-b`), open Volumes → **Select**: checkboxes appear
+    without shifting the header columns. Tick both (`2 selected`, **Delete
+    (2)**), open the confirmation, read the names and consequence, and confirm:
+    a success toast appears, the list refreshes, and `podman volume ls` no
+    longer shows them. **Select all** checks every visible row (and disables
+    itself); `Escape` and **Cancel** leave the mode without deleting. Tick a row
+    and switch tabs: the mode and checks are gone.
 66. SSH key passphrases: create an encrypted key (`ssh-keygen -t ed25519 -N
     pass -f /tmp/selkie-key`), add an SSH connection with it, and select it with
     **Use in this app** (or restart with it selected). The **Unlock SSH key**
@@ -1473,6 +1503,7 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
 - `src/podman/ssh.rs` — SSH key cache, per-connection agents and passphrase unlock
 - `src/terminal.rs` — PTY + `podman exec` session and `alacritty_terminal` emulator state
 - `src/desktop.rs` — single-instance lock/socket, tray icon, signal channel
+- `src/ui/bulk.rs` — bulk-selection state, tab→resource mapping and batched delete
 - `src/ui.rs` — entity, shared state, polling, selection, logs plumbing, actions
 - `src/ui/sidebar.rs` — navigation, engine status, Accounts/Settings entries
 - `src/ui/accounts.rs` — registry credentials read from Podman's auth files

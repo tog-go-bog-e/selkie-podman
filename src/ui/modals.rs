@@ -359,6 +359,9 @@ impl Selkie {
                     cx,
                 );
             }
+            Modal::DeleteSelected { kind, items } => {
+                self.run_bulk_delete(kind, items, cx);
+            }
             Modal::DeleteVolume { name } => {
                 let label = format!("Deleting volume {name}…");
                 let success = format!("Deleted volume {name}");
