@@ -62,12 +62,10 @@ impl Selkie {
                 self.close_context_menu(cx);
                 self.move_selection(-1, cx);
             }
-            "enter" | "return" => {
-                if self.selection.is_none() {
-                    self.select_index(0, cx);
-                    if !self.visible_indices.is_empty() {
-                        self.rows_scroll.scroll_to_item(0, ScrollStrategy::Center);
-                    }
+            "enter" | "return" if self.selection.is_none() => {
+                self.select_index(0, cx);
+                if !self.visible_indices.is_empty() {
+                    self.rows_scroll.scroll_to_item(0, ScrollStrategy::Center);
                 }
             }
             _ => {}

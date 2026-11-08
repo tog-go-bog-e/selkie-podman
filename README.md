@@ -164,7 +164,7 @@ engine**.
 
 ## Requirements
 
-- Rust 1.85+ (tested with 1.92)
+- Rust 1.85+ (tested with 1.99)
 - Podman in `PATH` (tested with 5.4), **or** Docker Engine reachable through its
   socket (`DOCKER_HOST` is honoured). The engine's CLI is needed for the
   streaming/interactive features listed under Engines.
