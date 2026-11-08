@@ -1,17 +1,27 @@
 # Selkie
 
-A native desktop client for [Podman](https://podman.io), written in Rust with
-[`gpui`](https://gpui.rs), Zed's GPU-accelerated UI framework. It is a
+A native desktop client for [Podman](https://podman.io) and Docker, written in
+Rust with [`gpui`](https://gpui.rs), Zed's GPU-accelerated UI framework. It is a
 deliberately small, lightweight alternative to
 [Podman Desktop](https://podman-desktop.io).
 
 Selkie is an independent project. It is not affiliated with or endorsed by the
-Podman or Podman Desktop projects.
+Podman, Podman Desktop or Docker projects.
 
-Current scope: **manage containers and images on the local Podman engine**.
+Current scope: **manage containers and images on the local Podman or Docker
+engine**.
 
 ## Features
 
+- **Engines**: choose **Podman** (default) or **Docker** under
+  `Settings → Engine`. Podman keeps using its CLI, so every Podman version that
+  prints `--format json` works. Docker is reached through its HTTP API with
+  [`bollard`](https://docs.rs/bollard), so the Docker socket is used directly.
+  Docker has no pods, standalone secrets, machines or Podman-style named
+  connections; those views are hidden when Docker is selected, and the Run
+  dialog's Secrets field is omitted. The Docker CLI is still used for commands
+  that stream a child process (logs, the interactive terminal, compose, build,
+  pull/push and registry login).
 - **Dashboard**: a landing overview with resource counts (containers running and
   total, images, pods, volumes, networks, machines), **disk usage** from
   `podman system df` (size and reclaimable space for images, containers and
@@ -149,7 +159,9 @@ Current scope: **manage containers and images on the local Podman engine**.
 ## Requirements
 
 - Rust 1.85+ (tested with 1.92)
-- Podman in `PATH` (tested with 5.4)
+- Podman in `PATH` (tested with 5.4), **or** Docker Engine reachable through its
+  socket (`DOCKER_HOST` is honoured). The Docker CLI is needed for the
+  streaming/interactive features listed under Engines.
 - `tar` in `PATH` for the image file browser (GNU tar or busybox tar)
 - Linux: the usual GPUI build dependencies, e.g. on Fedora:
 
@@ -279,13 +291,21 @@ the **Connections** tab to make this app talk to the VM.
 
 ## How it works
 
-- `src/podman.rs` talks to the CLI: `podman ps`, `podman images`, `podman inspect`,
-  `podman start/stop/restart/pause/unpause/rename/rm`, `podman run`,
-  `podman pull/tag/rmi`, `podman compose`, `podman info` / `podman system df`
-  (Dashboard only) and a long-running `podman logs -f`. Registry accounts are
-  read straight from Podman's auth files (`REGISTRY_AUTH_FILE`, the runtime
-  `auth.json` and `~/.docker/config.json`); only the username and credential
-  type are shown, never the secret.
+- **Podman**: `src/podman.rs` talks to the CLI: `podman ps`, `podman images`,
+  `podman inspect`, `podman start/stop/restart/pause/unpause/rename/rm`,
+  `podman run`, `podman pull/tag/rmi`, `podman compose`, `podman info` /
+  `podman system df` (Dashboard only) and a long-running `podman logs -f`.
+  Registry accounts are read straight from Podman's auth files
+  (`REGISTRY_AUTH_FILE`, the runtime `auth.json` and `~/.docker/config.json`);
+  only the username and credential type are shown, never the secret.
+- **Docker**: `src/podman/docker.rs` uses [`bollard`](https://docs.rs/bollard)
+  against the Docker socket (`DOCKER_HOST` is honoured) for the snapshot,
+  dashboard, details, stats and container/volume/network/image actions. A small
+  Tokio runtime bridges bollard's async API to the app's synchronous background
+  calls. Podman-only resources return an error, and the UI hides their views.
+  Operations that stream a child process use the `docker` CLI (selected by
+  `src/podman/exec.rs`); `src/podman/engine.rs` holds the current engine and its
+  capability flags.
   All commands use argument arrays (no shell), and user-supplied image
   references, names, port mappings, env entries and mounts are validated before
   being passed through. Compose projects are derived from the labels on
@@ -304,7 +324,7 @@ the **Connections** tab to make this app talk to the VM.
   - `src/ui/search.rs` / `src/ui/sorting.rs` — table search and column sorting
   - `src/ui/sidebar.rs` — navigation, engine status, Accounts/Settings entries
   - `src/ui/dashboard.rs` — resource cards, disk usage and engine details
-  - `src/ui/accounts.rs` — registry credentials read from Podman's auth files
+  - `src/ui/accounts.rs` — registry credentials read from the engine's credential files
   - `src/ui/preferences.rs` — the Settings page (appearance, panels, engine, about)
   - `src/ui/table.rs` — toolbars, search field, sortable headers and table bodies
   - `src/ui/rows.rs` — all row builders and hover action buttons
@@ -447,10 +467,18 @@ prioritized next milestones and verification checklist.
 
 ## Known limitations
 
-- The CLI is used instead of the libpod REST API: one process per action and no
-  structured progress reporting (pull/build output is streamed as plain text).
-  This is deliberate for now (no socket dependency); revisit the REST API if
-  those capabilities become priorities — see [ROADMAP.md](ROADMAP.md).
+- **Podman engine**: the CLI is used instead of the libpod REST API: one process
+  per action and no structured progress reporting (pull/build output is streamed
+  as plain text). This is deliberate for now (no socket dependency); revisit the
+  REST API if those capabilities become priorities — see [ROADMAP.md](ROADMAP.md).
+- **Docker engine**: pods, standalone secrets, machines and Podman-style named
+  connections do not exist, so their views and the Run dialog's Secrets field are
+  hidden. Docker uses its HTTP API for lists, details, stats and actions, but the
+  Docker CLI is still spawned for logs, the interactive terminal, compose, build,
+  pull/push and registry login. Multi-platform Docker builds keep one tag
+  (`-t`); Docker has no `podman build --manifest` equivalent here. Insecure
+  loopback registries rely on Docker's daemon configuration because Docker has
+  no per-command `--tls-verify`.
 - Logs stream the selected window (default 10 minutes) into an 800-line buffer.
   **Load older** grows that buffer with `--tail` up to 3000 lines and turns
   Follow off; it stops with a "No older log output" toast when history is

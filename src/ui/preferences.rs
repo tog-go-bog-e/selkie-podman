@@ -182,52 +182,80 @@ impl Selkie {
     }
 
     fn engine_view(&self, cx: &mut Context<Self>) -> AnyElement {
-        let connection = match &self.settings.connection {
-            Some(name) => name.clone(),
-            None => "local default".to_string(),
-        };
-        let mut controls = Vec::new();
-        if self.settings.connection.is_some() {
-            controls.push(
-                small_button(
-                    "settings-use-default-engine",
-                    "Use Podman default",
-                    false,
-                    cx.listener(|this, _, _, cx| this.use_connection(None, cx)),
+        let mut engine_options = Vec::new();
+        for kind in EngineKind::ALL {
+            engine_options.push(
+                small_button_dyn(
+                    format!("engine-{kind:?}"),
+                    kind.label(),
+                    self.settings.engine == kind,
+                    cx.listener(move |this, _, _, cx| this.use_engine(kind, cx)),
                 )
                 .into_any_element(),
             );
         }
-        let running = self
-            .local
-            .machines
-            .iter()
-            .filter(|item| item.running)
-            .count();
 
-        let content = self.section_container("settings-engine");
-        content
+        let mut content = self
+            .section_container("settings-engine")
             .child(panel(vec![option_row(
-                "Connection",
-                format!("{connection} · switch in the Connections tab"),
-                controls,
-            )]))
-            .child(section_title("RESOURCES"))
-            .child(panel(vec![
-                about_row(
-                    "Machines",
-                    format!("{} · {running} running", self.local.machines.len()),
-                ),
-                about_row("Connections", self.local.connections.len().to_string()),
-            ]))
-            .into_any_element()
+                "Engine",
+                "Podman uses its CLI; Docker uses its HTTP API".to_string(),
+                engine_options,
+            )]));
+
+        if self.settings.engine == EngineKind::Podman {
+            let connection = match &self.settings.connection {
+                Some(name) => name.clone(),
+                None => "local default".to_string(),
+            };
+            let mut controls = Vec::new();
+            if self.settings.connection.is_some() {
+                controls.push(
+                    small_button(
+                        "settings-use-default-engine",
+                        "Use Podman default",
+                        false,
+                        cx.listener(|this, _, _, cx| this.use_connection(None, cx)),
+                    )
+                    .into_any_element(),
+                );
+            }
+            let running = self
+                .local
+                .machines
+                .iter()
+                .filter(|item| item.running)
+                .count();
+
+            content = content
+                .child(panel(vec![option_row(
+                    "Connection",
+                    format!("{connection} · switch in the Connections tab"),
+                    controls,
+                )]))
+                .child(section_title("RESOURCES"))
+                .child(panel(vec![
+                    about_row(
+                        "Machines",
+                        format!("{} · {running} running", self.local.machines.len()),
+                    ),
+                    about_row("Connections", self.local.connections.len().to_string()),
+                ]));
+        } else {
+            content = content.child(panel(vec![about_row(
+                "Podman-only features",
+                "pods, secrets, machines and connections are hidden".to_string(),
+            )]));
+        }
+
+        content.into_any_element()
     }
 
     fn about_view(&self) -> AnyElement {
         let settings_path = super::settings::path()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "not writable".to_string());
-        let podman = if self.snapshot.version.is_empty() {
+        let engine_version = if self.snapshot.version.is_empty() {
             "not detected".to_string()
         } else {
             self.snapshot.version.clone()
@@ -236,7 +264,7 @@ impl Selkie {
         self.section_container("settings-about")
             .child(panel(vec![
                 about_row("Version", env!("CARGO_PKG_VERSION").to_string()),
-                about_row("Podman", podman),
+                about_row(podman::engine().label(), engine_version),
                 about_row("Settings file", settings_path),
                 about_row("Renderer", "gpui · experimental".to_string()),
             ]))

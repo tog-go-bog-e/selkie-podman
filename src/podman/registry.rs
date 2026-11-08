@@ -3,17 +3,61 @@
 use super::*;
 
 /// Push an image to a registry destination (e.g. `quay.io/user/app:latest`).
+///
+/// Podman pushes any local image to any destination. `docker push` takes a
+/// single name, so for Docker the image is first tagged as the destination
+/// (in one `sh` process, so the output panel streams and cancels both steps;
+/// the references travel as positional arguments, never through the script).
 pub fn push_command(image: &str, destination: &str) -> Result<Command, String> {
     let image = validate_image_reference(image)?;
     let destination = validate_image_reference(destination)?;
+    if engine() == EngineKind::Docker {
+        return Ok(docker_push_command(image, destination));
+    }
     let mut command = base_command();
     command.arg("push");
     // Local registries (docker-registry on localhost) usually run without TLS.
+    // `--tls-verify` is a Podman flag; Docker configures insecure registries
+    // on the daemon instead.
     if is_loopback_registry(destination) {
         command.arg("--tls-verify=false");
     }
     command.args([image, destination]);
     Ok(command)
+}
+
+/// `docker push` for validated references, tagging first when they differ.
+pub(super) fn docker_push_command(image: &str, destination: &str) -> Command {
+    if image == destination {
+        let mut command = Command::new("docker");
+        command.args(["push", destination]);
+        return command;
+    }
+    let mut command = Command::new("sh");
+    command.args([
+        "-c",
+        r#"docker tag "$1" "$2" && exec docker push "$2""#,
+        "selkie-push",
+        image,
+        destination,
+    ]);
+    command
+}
+
+/// The command line [`push_command`] runs, for the output panel's header.
+pub fn push_display(image: &str, destination: &str) -> String {
+    push_display_for(engine(), image, destination)
+}
+
+pub(super) fn push_display_for(kind: EngineKind, image: &str, destination: &str) -> String {
+    let (image, destination) = (image.trim(), destination.trim());
+    match kind {
+        EngineKind::Docker if image == destination => format!("docker push {destination}"),
+        EngineKind::Docker => {
+            format!("docker tag {image} {destination} && docker push {destination}")
+        }
+        EngineKind::Podman => format!("podman push {image} {destination}"),
+    }
 }
 
 /// Log in to a registry. The password is fed on stdin, never as an argument.
@@ -22,7 +66,7 @@ pub fn login_command(registry: &str, username: &str) -> Result<Command, String> 
     let username = validate_username(username)?;
     let mut command = base_command();
     command.args(["login", "--username", username, "--password-stdin"]);
-    if is_loopback_registry(registry) {
+    if engine() == EngineKind::Podman && is_loopback_registry(registry) {
         command.arg("--tls-verify=false");
     }
     command.arg(registry);
@@ -30,16 +74,22 @@ pub fn login_command(registry: &str, username: &str) -> Result<Command, String> 
 }
 
 /// Log out of one registry, or all of them when `registry` is `None`.
+///
+/// For Docker, "all" has no flag (`docker logout` takes one server), so it is
+/// handled by [`logout`]; this returns an error for that case.
 pub fn logout_command(registry: Option<&str>) -> Result<Command, String> {
     let mut command = base_command();
     command.arg("logout");
     match registry.map(str::trim).filter(|value| !value.is_empty()) {
         Some(registry) => {
             validate_registry(registry)?;
-            if is_loopback_registry(registry) {
+            if engine() == EngineKind::Podman && is_loopback_registry(registry) {
                 command.arg("--tls-verify=false");
             }
             command.arg(registry);
+        }
+        None if engine() == EngineKind::Docker => {
+            return Err("docker logout takes a single registry".to_string());
         }
         None => {
             command.arg("--all");
@@ -48,9 +98,27 @@ pub fn logout_command(registry: Option<&str>) -> Result<Command, String> {
     Ok(command)
 }
 
-/// Execute a logout command.
+/// Execute a logout. For Docker, "all registries" logs out of every registry
+/// listed in its config, one at a time, and reports the ones that failed.
 pub fn logout(registry: Option<&str>) -> Result<String, String> {
-    execute(logout_command(registry)?, "logout")
+    let registry = registry.map(str::trim).filter(|value| !value.is_empty());
+    if registry.is_some() || engine() == EngineKind::Podman {
+        return execute(logout_command(registry)?, "logout");
+    }
+    let mut failures = Vec::new();
+    for account in accounts()? {
+        if let Err(error) = execute(
+            logout_command(Some(&account.registry))?,
+            &format!("logout {}", account.registry),
+        ) {
+            failures.push(error);
+        }
+    }
+    if failures.is_empty() {
+        Ok(String::new())
+    } else {
+        Err(failures.join("\n"))
+    }
 }
 
 /// One registry credential Podman would use.
@@ -92,6 +160,20 @@ pub fn auth_files() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
 
     let mut files = Vec::new();
+    if engine::is_docker() {
+        // Docker keeps credentials in its own config, not Podman's auth files.
+        // `DOCKER_CONFIG` replaces `~/.docker` entirely; Docker does not
+        // fall back to the home directory when it is set.
+        match std::env::var_os("DOCKER_CONFIG").filter(|value| !value.is_empty()) {
+            Some(config) => files.push(PathBuf::from(config).join("config.json")),
+            None => {
+                if let Some(home) = std::env::var_os("HOME") {
+                    files.push(PathBuf::from(home).join(".docker/config.json"));
+                }
+            }
+        }
+        return files;
+    }
     if let Some(path) = std::env::var_os("REGISTRY_AUTH_FILE") {
         files.push(PathBuf::from(path));
     }

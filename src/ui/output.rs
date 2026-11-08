@@ -126,7 +126,12 @@ impl Selkie {
         self.start_output(
             OutputSpec {
                 title: format!("compose {} · {}", action.verb(), project.name),
-                command_line: format!("$ podman compose -p {} {}", project.name, action.verb()),
+                command_line: format!(
+                    "$ {} compose -p {} {}",
+                    podman::engine().binary(),
+                    project.name,
+                    action.verb()
+                ),
                 success: format!(
                     "compose {} {} {}",
                     action.verb(),
@@ -182,7 +187,7 @@ impl Selkie {
             Err(error) => {
                 self.toast(
                     ToastKind::Error,
-                    format!("could not run podman: {error}"),
+                    format!("could not run {}: {error}", podman::engine().binary()),
                     cx,
                 );
                 return;

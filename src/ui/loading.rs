@@ -38,6 +38,7 @@ impl Selkie {
                 .local_fetched
                 .is_none_or(|at| at.elapsed() >= LOCAL_TTL);
 
+        let generation = self.engine_generation;
         cx.spawn(async move |this, cx| {
             let (local, result, dashboard) = cx
                 .background_executor()
@@ -54,6 +55,13 @@ impl Selkie {
                 .await;
             this.update(cx, |this, cx| {
                 this.loading = false;
+                if this.engine_generation != generation {
+                    // The engine changed while this fetch ran: its data belongs
+                    // to the previous engine. Fetch again for the current one.
+                    this.refresh_pending = false;
+                    this.refresh(cx);
+                    return;
+                }
                 // Machines and connections are local configuration and stay
                 // available even when the selected engine cannot be reached.
                 if let Some(local) = local {

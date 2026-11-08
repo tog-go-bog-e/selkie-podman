@@ -21,6 +21,8 @@ use serde::Deserialize;
 // `crate::util`.
 mod compose;
 mod containers;
+mod docker;
+mod engine;
 mod exec;
 mod images;
 mod machines;
@@ -32,6 +34,7 @@ mod system;
 pub use crate::util::*;
 pub use compose::*;
 pub use containers::*;
+pub use engine::*;
 pub use exec::*;
 pub use images::*;
 pub use machines::*;

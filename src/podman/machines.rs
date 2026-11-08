@@ -61,6 +61,7 @@ impl Connection {
 }
 
 pub fn machine_action(name: &str, action: MachineAction) -> Result<String, String> {
+    engine::podman_only("machines")?;
     run_local(&["machine", action.verb(), name])
 }
 
@@ -124,6 +125,7 @@ pub(super) fn parse_machine_number(
 }
 
 pub fn machine_init_command(options: &MachineInitOptions) -> Result<Command, String> {
+    engine::podman_only("machines")?;
     if !options.name.is_empty() {
         validate_machine_name(&options.name)?;
     }
@@ -178,12 +180,14 @@ pub fn machine_init_display(options: &MachineInitOptions) -> String {
 }
 
 pub fn machine_remove(name: &str) -> Result<String, String> {
+    engine::podman_only("machines")?;
     run_local(&["machine", "rm", "-f", name])
 }
 
 /// `podman machine ssh` for the details terminal. Machine commands are local, so
 /// they deliberately ignore the selected engine connection.
 pub fn machine_ssh_command(name: &str) -> Result<Command, String> {
+    engine::podman_only("machines")?;
     let name = validate_machine_name(name)?;
     let mut command = Command::new("podman");
     command.args(["machine", "ssh", name]);
@@ -226,6 +230,9 @@ impl MachineAction {
 /// Machines and connections come from local Podman configuration, so they stay
 /// available even when the selected engine is unreachable.
 pub fn local_state() -> LocalState {
+    if engine::is_docker() {
+        return LocalState::default();
+    }
     LocalState {
         machines: machine_list().unwrap_or_default(),
         connections: connection_list().unwrap_or_default(),
@@ -233,6 +240,7 @@ pub fn local_state() -> LocalState {
 }
 
 pub fn machine_list() -> Result<Vec<Machine>, String> {
+    engine::podman_only("machines")?;
     let json = query_local(&["machine", "list", "--format", "json"])?;
     parse_machines(&json)
 }
@@ -260,6 +268,7 @@ pub(super) fn parse_machines(json: &str) -> Result<Vec<Machine>, String> {
 }
 
 pub fn connection_list() -> Result<Vec<Connection>, String> {
+    engine::podman_only("connections")?;
     let json = query_local(&["system", "connection", "list", "--format", "json"])?;
     parse_connections(&json)
 }
@@ -272,6 +281,7 @@ const CONNECTION_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 /// Check that `podman --connection <name> info` answers. This never changes the
 /// connection the app uses.
 pub fn probe_connection(name: &str) -> Result<(), String> {
+    engine::podman_only("connections")?;
     let name = name.trim();
     if name.is_empty() {
         return Err("connection name cannot be empty".to_string());
@@ -332,6 +342,7 @@ pub fn connection_add_command(
     uri: &str,
     identity: Option<&str>,
 ) -> Result<Command, String> {
+    engine::podman_only("connections")?;
     let name = validate_connection_name(name)?;
     let uri = validate_connection_uri(uri)?;
     let identity = identity
@@ -377,6 +388,7 @@ pub fn connection_update(
     uri: &str,
     identity: Option<&str>,
 ) -> Result<String, String> {
+    engine::podman_only("connections")?;
     let command = connection_add_command(name, uri, identity)?;
     let old_name = old_name.trim();
     let name = name.trim();
@@ -403,6 +415,7 @@ pub fn connection_update(
 
 /// Remove a connection from Podman's configuration. Local, like `add`.
 pub fn connection_remove(name: &str) -> Result<String, String> {
+    engine::podman_only("connections")?;
     let name = name.trim();
     if name.is_empty() {
         return Err("connection name cannot be empty".to_string());

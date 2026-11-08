@@ -20,6 +20,17 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 
 ## Current state
 
+### Done (Docker engine)
+
+- [x] Select Podman or Docker under `Settings → Engine`; the choice persists
+- [x] Docker snapshot, dashboard, inspect, stats and container/volume/network/image
+      actions through the Docker HTTP API (`bollard`)
+- [x] Docker events stream and registry accounts from `~/.docker/config.json`
+- [x] Capability flags hide Pods, Secrets, Machines and Connections (and the Run
+      dialog's Secrets field) when Docker is selected
+- [x] Streaming/interactive surfaces (logs, terminal, compose, build, pull/push,
+      login) use the Docker CLI
+
 ### Done (Milestone A)
 
 - [x] Container list: name, image, state, ports, status, ID
@@ -583,17 +594,17 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 
 | Concern | Implementation |
 | --- | --- |
-| Data access | `podman` CLI + JSON (`ps`, `images`, `pods`, `volume`, `network`, `inspect`, `logs`, `compose`) |
+| Data access | Podman: CLI + JSON (`ps`, `images`, `pods`, `volume`, `network`, `inspect`, `logs`, `compose`). Docker: HTTP API via `bollard` (`src/podman/docker.rs`), with the Docker CLI for streaming/interactive commands |
 | UI | One GPUI entity (`Selkie`) in `src/ui.rs`; rendering split by concern under `src/ui/` |
 | Styling | `ui/theme.rs` palettes (dark / light / high contrast) via a thread-local current theme |
 | Layout | Sidebar and details widths from settings, adjusted by draggable splitters (`ui/resizer.rs`) and clamped per frame to the window |
-| Persistence | `ui/settings.rs` → JSON in the XDG config dir (theme, tab, refresh, log window, panel widths, window size) |
+| Persistence | `ui/settings.rs` → JSON in the XDG config dir (engine, theme, tab, refresh, log window, panel widths, window size) |
 | Desktop integration | `src/desktop.rs`: `flock` + Unix socket for single instance; `ksni` (D-Bus) tray; close-to-tray by unmapping the X11 window (map + activate from the tray or a second launch) |
-| Engines | `podman machine` / `podman system connection` parsed into a separate `LocalState`; selected connection injected as `--connection` |
+| Engines | `src/podman/engine.rs` selects Podman (CLI) or Docker (API) and exposes capability flags; Podman machines/connections are parsed into a separate `LocalState`, and the selected connection is injected as `--connection` |
 | Machines | `podman machine init` (streamed), `machine rm -f` behind a confirmation, and `machine ssh` in the shared PTY terminal; machine commands are local and ignore `--connection` |
 | Lifecycle | Close handler + `Ctrl/Cmd+Q` + tray Quit; window size watched every 500 ms |
 | Updates | `podman events` stream (`src/ui/events.rs`) refreshes the snapshot; polling task with a configurable interval (3/5/10/30 s) remains as fallback |
-| Actions | `std::process::Command` on a background executor, then refresh |
+| Actions | `std::process::Command` (Podman) or `bollard` (Docker) on a background executor, then refresh |
 | Creating | `podman run -d` from an image with validated name, ports, env, volumes and command (`src/podman.rs`) |
 | Creating resources | `podman volume create` / `network create` / `pod create` with validated optional flags; `podman kube play` streams through the shared output panel |
 | Pruning | `podman volume prune -f` / `network prune -f` behind a confirmation dialog |
@@ -609,8 +620,8 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Settings page | Sub-navigation with Registries, Appearance (theme, refresh, log window, panel resets), Engine and About; the selected pane is persisted |
 | Builds | `podman build -f <Containerfile> (-t <tag> | --manifest <tag>) [--platform …] [--build-arg …] <context>` (manifest lists for multi-platform); context defaults to the Containerfile directory, all inputs validated, shared output panel |
 | Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
-| Stats | `podman stats --no-stream` polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
-| Dashboard | Counts from the snapshot; `podman info` + `podman system df` fetched only while the tab is visible and cached for 30 s (info probes the store and takes seconds) |
+| Stats | Podman `stats --no-stream` or Docker `/stats?stream=false`, polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
+| Dashboard | Counts from the snapshot; `podman info` + `podman system df` or Docker `info` + `system df` fetched only while the tab is visible and cached for 30 s (info probes the store and takes seconds) |
 | Packaging | `packaging/` holds the SVG/PNG icons, desktop entry, `install.sh` (user-level, `DESTDIR`-capable, `--uninstall`) and `build-release.sh` (versioned tarball + sha256); `app_id` sets `WM_CLASS`, and the app writes `_NET_WM_ICON` itself (16–128 px, drawn at runtime) |
 | Selection | Stored by ID; cleared when the item disappears from the snapshot |
 | Errors | Last good snapshot kept; error shown in status bar + toasts |
@@ -759,7 +770,7 @@ usefulness for a local-engine app:
 The parity backlog is now empty.
 
 Explicitly not planned: Kubernetes resource management, the extension
-API/catalog, multi-provider engines (Docker/Lima), telemetry, auto-update and
+API/catalog, additional VM runtimes (Lima), telemetry, auto-update and
 i18n. See "Non-goals" above.
 
 ## Non-goals (for now)

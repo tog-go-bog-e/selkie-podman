@@ -42,7 +42,7 @@ impl Selkie {
                         div()
                             .text_xs()
                             .text_color(rgb(theme().muted))
-                            .child("for Podman"),
+                            .child(format!("for {}", podman::engine().label())),
                     ),
             )
     }
@@ -132,8 +132,9 @@ impl Selkie {
     }
 
     pub(super) fn sidebar(&self, cx: &mut Context<Self>) -> Div {
+        let engine = podman::engine();
         let connected = self.error.is_none() && !self.snapshot.version.is_empty();
-        let engine = if self.snapshot.version.is_empty() {
+        let version = if self.snapshot.version.is_empty() {
             "not detected".to_string()
         } else {
             self.snapshot.version.clone()
@@ -190,13 +191,15 @@ impl Selkie {
                         Some(self.snapshot.images.len()),
                         cx,
                     ))
-                    .child(self.nav_item(
-                        Tab::Pods,
-                        "nav-pods",
-                        "Pods",
-                        Some(self.snapshot.pods.len()),
-                        cx,
-                    ))
+                    .when(engine.has_pods(), |el| {
+                        el.child(self.nav_item(
+                            Tab::Pods,
+                            "nav-pods",
+                            "Pods",
+                            Some(self.snapshot.pods.len()),
+                            cx,
+                        ))
+                    })
                     .child(self.nav_item(
                         Tab::Volumes,
                         "nav-volumes",
@@ -211,43 +214,51 @@ impl Selkie {
                         Some(self.snapshot.networks.len()),
                         cx,
                     ))
-                    .child(self.nav_item(
-                        Tab::Secrets,
-                        "nav-secrets",
-                        "Secrets",
-                        Some(self.snapshot.secrets.len()),
-                        cx,
-                    )),
+                    .when(engine.has_secrets(), |el| {
+                        el.child(self.nav_item(
+                            Tab::Secrets,
+                            "nav-secrets",
+                            "Secrets",
+                            Some(self.snapshot.secrets.len()),
+                            cx,
+                        ))
+                    }),
             )
-            .child(
-                div()
-                    .mt_6()
-                    .mb_2()
-                    .px_2()
-                    .text_xs()
-                    .text_color(rgb(theme().faint))
-                    .child("ENGINES"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(self.nav_item(
-                        Tab::Machines,
-                        "nav-machines",
-                        "Machines",
-                        Some(self.local.machines.len()),
-                        cx,
-                    ))
-                    .child(self.nav_item(
-                        Tab::Connections,
-                        "nav-connections",
-                        "Connections",
-                        Some(self.local.connections.len()),
-                        cx,
-                    )),
-            )
+            .when(engine.has_machines() || engine.has_connections(), |el| {
+                el.child(
+                    div()
+                        .mt_6()
+                        .mb_2()
+                        .px_2()
+                        .text_xs()
+                        .text_color(rgb(theme().faint))
+                        .child("ENGINES"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .when(engine.has_machines(), |el| {
+                            el.child(self.nav_item(
+                                Tab::Machines,
+                                "nav-machines",
+                                "Machines",
+                                Some(self.local.machines.len()),
+                                cx,
+                            ))
+                        })
+                        .when(engine.has_connections(), |el| {
+                            el.child(self.nav_item(
+                                Tab::Connections,
+                                "nav-connections",
+                                "Connections",
+                                Some(self.local.connections.len()),
+                                cx,
+                            ))
+                        }),
+                )
+            })
             .child(div().flex_1())
             .child(
                 div()
@@ -281,9 +292,9 @@ impl Selkie {
                                     .flex_col()
                                     .child(div().text_xs().text_color(rgb(theme().text)).child(
                                         if connected {
-                                            "Podman engine"
+                                            format!("{} engine", engine.label())
                                         } else {
-                                            "Engine offline"
+                                            "Engine offline".to_string()
                                         },
                                     ))
                                     .child(
@@ -292,7 +303,7 @@ impl Selkie {
                                             .text_color(rgb(theme().muted))
                                             .whitespace_nowrap()
                                             .truncate()
-                                            .child(engine),
+                                            .child(version),
                                     )
                                     .child(
                                         div()
@@ -300,9 +311,14 @@ impl Selkie {
                                             .text_color(rgb(theme().faint))
                                             .whitespace_nowrap()
                                             .truncate()
-                                            .child(match &self.settings.connection {
-                                                Some(name) => format!("via {name}"),
-                                                None => "local default".to_string(),
+                                            .child(match (&engine, &self.settings.connection) {
+                                                (EngineKind::Podman, Some(name)) => {
+                                                    format!("via {name}")
+                                                }
+                                                (EngineKind::Podman, None) => {
+                                                    "local default".to_string()
+                                                }
+                                                (EngineKind::Docker, _) => "Docker API".to_string(),
                                             }),
                                     ),
                             ),

@@ -47,10 +47,11 @@ pub(super) fn execute(command: Command, display: &str) -> Result<String, String>
 }
 
 pub(super) fn launch_error(err: std::io::Error) -> String {
+    let binary = engine().binary();
     if err.kind() == std::io::ErrorKind::NotFound {
-        "podman was not found in PATH".to_string()
+        format!("{binary} was not found in PATH")
     } else {
-        format!("failed to launch podman: {err}")
+        format!("failed to launch {binary}: {err}")
     }
 }
 
@@ -113,7 +114,8 @@ pub(super) fn execute_with(
             .map_err(launch_error)?
             .ok_or_else(|| {
                 format!(
-                    "`podman {display}` did not answer within {} s; is the engine reachable?",
+                    "`{} {display}` did not answer within {} s; is the engine reachable?",
+                    engine().binary(),
                     timeout.as_secs()
                 )
             })?,
@@ -122,7 +124,11 @@ pub(super) fn execute_with(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
-            format!("`podman {display}` exited with {}", output.status)
+            format!(
+                "`{} {display}` exited with {}",
+                engine().binary(),
+                output.status
+            )
         } else {
             stderr
         });
@@ -174,11 +180,14 @@ pub(super) fn ssh_agent_socket(runtime: &std::path::Path) -> Option<std::path::P
     .find(|path| std::fs::metadata(path).is_ok_and(|meta| meta.file_type().is_socket()))
 }
 
-/// A `podman` command that targets the selected connection, if any.
+/// A command for the selected engine. Podman receives the selected connection;
+/// Docker reads `DOCKER_HOST` itself, so no `--connection` is added for it.
 pub fn base_command() -> Command {
-    let mut command = Command::new("podman");
-    apply_ssh_agent(&mut command);
-    apply_connection(&mut command, connection().as_deref());
+    let mut command = Command::new(engine().binary());
+    if engine() == EngineKind::Podman {
+        apply_ssh_agent(&mut command);
+        apply_connection(&mut command, connection().as_deref());
+    }
     command
 }
 

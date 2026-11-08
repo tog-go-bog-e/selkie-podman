@@ -30,17 +30,33 @@ impl Drop for EventChild {
 
 #[derive(Deserialize)]
 struct RawEvent {
-    #[serde(default, rename = "Status")]
+    /// Podman's field; Docker sends it lower-case on older API versions.
+    #[serde(default, rename = "Status", alias = "status")]
     status: String,
+    /// Docker's field; newer API versions send only this one.
+    #[serde(default, rename = "Action")]
+    action: String,
 }
 
 /// Health checks and exec sessions do not change the snapshot, but they can be
 /// frequent; ignoring them keeps event-driven refreshes meaningful.
+///
+/// Docker appends details after a colon (`exec_start: /bin/sh -c …`,
+/// `health_status: healthy`), so only the part before it is compared.
 fn is_ignored_event(line: &str) -> bool {
-    match serde_json::from_str::<RawEvent>(line) {
-        Ok(event) => matches!(event.status.as_str(), "health_status" | "exec" | "exec_die"),
-        Err(_) => false,
-    }
+    let Ok(event) = serde_json::from_str::<RawEvent>(line) else {
+        return false;
+    };
+    let name = if event.status.is_empty() {
+        &event.action
+    } else {
+        &event.status
+    };
+    let name = name.split(':').next().unwrap_or_default().trim();
+    matches!(
+        name,
+        "health_status" | "exec" | "exec_start" | "exec_create" | "exec_die" | "exec_detach"
+    )
 }
 
 impl Selkie {
@@ -55,8 +71,13 @@ impl Selkie {
 
         let task = cx.spawn(async move |this, cx| loop {
             let mut command = podman::base_command();
+            // Podman has a JSON formatter; Docker's `--format` is a Go template.
+            if podman::is_docker() {
+                command.args(["events", "--format", "{{json .}}"]);
+            } else {
+                command.args(["events", "--format", "json"]);
+            }
             command
-                .args(["events", "--format", "json"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -192,5 +213,27 @@ mod tests {
             r#"{"Status":"start","Type":"container"}"#
         ));
         assert!(!is_ignored_event("not json"));
+    }
+
+    #[test]
+    fn ignores_docker_events_with_details() {
+        // Older Docker API: lower-case `status` with details after a colon.
+        assert!(is_ignored_event(
+            r#"{"status":"exec_start: /bin/sh -c ls","Type":"container","Action":"exec_start: /bin/sh -c ls"}"#
+        ));
+        assert!(is_ignored_event(
+            r#"{"status":"health_status: healthy","Type":"container"}"#
+        ));
+        // Newer Docker API: only `Action`.
+        assert!(is_ignored_event(
+            r#"{"Type":"container","Action":"exec_create: sh"}"#
+        ));
+        assert!(is_ignored_event(
+            r#"{"Type":"container","Action":"health_status: unhealthy"}"#
+        ));
+        assert!(!is_ignored_event(r#"{"Type":"container","Action":"die"}"#));
+        assert!(!is_ignored_event(
+            r#"{"status":"start","Type":"container","Action":"start"}"#
+        ));
     }
 }

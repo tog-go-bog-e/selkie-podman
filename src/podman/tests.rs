@@ -1755,3 +1755,56 @@ fn secrets_round_trip() {
         "secret was not removed"
     );
 }
+
+#[test]
+fn docker_push_tags_before_pushing() {
+    let args = |command: &Command| -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    };
+
+    // Already named as the destination: a plain single-argument push.
+    let command = docker_push_command("quay.io/me/app:1", "quay.io/me/app:1");
+    assert_eq!(command.get_program(), "docker");
+    assert_eq!(args(&command), ["push", "quay.io/me/app:1"]);
+
+    // Otherwise tag, then push; the references are positional arguments.
+    let command = docker_push_command("app:latest", "quay.io/me/app:latest");
+    assert_eq!(command.get_program(), "sh");
+    let args = args(&command);
+    assert_eq!(args[0], "-c");
+    assert!(
+        !args[1].contains("app:latest"),
+        "references leaked into the script"
+    );
+    assert_eq!(
+        &args[2..],
+        ["selkie-push", "app:latest", "quay.io/me/app:latest"]
+    );
+
+    assert_eq!(
+        push_display_for(EngineKind::Docker, "app:latest", "quay.io/me/app:latest"),
+        "docker tag app:latest quay.io/me/app:latest && docker push quay.io/me/app:latest"
+    );
+    assert_eq!(
+        push_display_for(EngineKind::Podman, "app:latest", "quay.io/me/app:latest"),
+        "podman push app:latest quay.io/me/app:latest"
+    );
+}
+
+#[test]
+fn memory_label_without_free_memory() {
+    let info = SystemInfo {
+        memory_total: 8 * 1024 * 1024 * 1024,
+        memory_free: None,
+        ..SystemInfo::default()
+    };
+    assert!(
+        info.memory_label().ends_with("total"),
+        "{}",
+        info.memory_label()
+    );
+    assert_eq!(info.memory_used_percent(), None);
+}

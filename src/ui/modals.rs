@@ -434,7 +434,10 @@ impl Selkie {
                         self.start_output(
                             OutputSpec {
                                 title: format!("push · {destination}"),
-                                command_line: format!("$ podman push {image} {destination}"),
+                                command_line: format!(
+                                    "$ {}",
+                                    podman::push_display(&image, &destination)
+                                ),
                                 success: format!("Pushed {image} to {destination}"),
                                 failure: format!("Push failed for {image}"),
                             },
@@ -457,7 +460,8 @@ impl Selkie {
                         OutputSpec {
                             title: format!("login · {registry}"),
                             command_line: format!(
-                                "$ podman login --username {username} --password-stdin {registry}"
+                                "$ {} login --username {username} --password-stdin {registry}",
+                                podman::engine().binary()
                             ),
                             success: format!("Logged in to {registry}"),
                             failure: format!("Login failed for {registry}"),
@@ -497,7 +501,7 @@ impl Selkie {
                 self.start_output(
                     OutputSpec {
                         title: format!("pull · {reference}"),
-                        command_line: format!("$ podman pull {reference}"),
+                        command_line: format!("$ {} pull {reference}", podman::engine().binary()),
                         success: format!("Pulled {reference}"),
                         failure: format!("Pull failed for {reference}"),
                     },
@@ -694,8 +698,13 @@ impl Selkie {
         command: Command,
         cx: &mut Context<Self>,
     ) {
-        let mut line = format!("$ podman build -f {}", options.containerfile);
-        if options.platforms.len() > 1 {
+        let mut line = format!(
+            "$ {} build -f {}",
+            podman::engine().binary(),
+            options.containerfile
+        );
+        let multi_platform = options.platforms.len() > 1 && !podman::is_docker();
+        if multi_platform {
             line.push_str(&format!(" --manifest {}", options.tag));
         } else {
             line.push_str(&format!(" -t {}", options.tag));

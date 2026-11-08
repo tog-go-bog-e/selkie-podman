@@ -154,15 +154,24 @@ pub fn container_logs_command(id: &str, window: &str) -> Command {
 }
 
 pub fn container_action(id: &str, action: ContainerAction) -> Result<String, String> {
+    if engine::is_docker() {
+        return docker::container_action(id, action);
+    }
     run(&[action.verb(), id])
 }
 
 pub fn remove_container(id: &str) -> Result<String, String> {
+    if engine::is_docker() {
+        return docker::remove_container(id);
+    }
     run(&["rm", "-f", id])
 }
 
 pub fn rename_container(id: &str, name: &str) -> Result<String, String> {
     let name = validate_container_name(name)?;
+    if engine::is_docker() {
+        return docker::rename_container(id, name);
+    }
     run(&["rename", id, name])
 }
 
@@ -191,6 +200,9 @@ pub fn exec_terminal_command(container: &str) -> Command {
 /// Returns `None` when Podman reports no statistics for the container. A
 /// stopped container yields a zeroed sample rather than an error.
 pub fn stats(id: &str) -> Result<Option<StatsSample>, String> {
+    if engine::is_docker() {
+        return docker::stats(id);
+    }
     let json = query(&[
         "stats",
         "--no-stream",
@@ -245,6 +257,11 @@ pub fn container_run_command(options: &RunOptions) -> Result<Command, String> {
         if secret.is_empty() || secret.starts_with('-') {
             return Err(format!("invalid secret mapping: {secret}"));
         }
+    }
+    if engine::is_docker() && !options.secrets.is_empty() {
+        return Err(
+            "secrets are not available with the Docker engine; clear the Secrets field".to_string(),
+        );
     }
 
     let mut command = base_command();
@@ -452,6 +469,9 @@ pub fn log_timestamp(line: &str) -> Option<&str> {
 }
 
 pub fn inspect_container(id: &str) -> Result<ContainerDetails, String> {
+    if engine::is_docker() {
+        return docker::inspect_container(id);
+    }
     let json = query(&["inspect", id])?;
     parse_inspect(json.trim()).map_err(|err| format!("could not inspect {id}: {err}"))
 }

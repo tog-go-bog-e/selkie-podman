@@ -43,8 +43,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::podman::{
     self, ComposeAction, ComposeProject, Connection, Container, ContainerAction, ContainerDetails,
-    Image, LocalState, Machine, MachineAction, Network, NetworkDetails, Pod, PodAction, PodDetails,
-    Secret, Snapshot, StatsSample, Volume, VolumeDetails,
+    EngineKind, Image, LocalState, Machine, MachineAction, Network, NetworkDetails, Pod, PodAction,
+    PodDetails, Secret, Snapshot, StatsSample, Volume, VolumeDetails,
 };
 use crate::terminal::TerminalSession;
 
@@ -91,6 +91,21 @@ pub(crate) enum Tab {
     Connections,
     Accounts,
     Settings,
+}
+
+impl Tab {
+    /// Whether this view exists for the engine. Docker has no pods, standalone
+    /// secrets, machines or Podman-style named connections, so those views are
+    /// hidden instead of showing an empty (or broken) table.
+    pub(crate) fn supported_by(self, engine: EngineKind) -> bool {
+        match self {
+            Tab::Pods => engine.has_pods(),
+            Tab::Secrets => engine.has_secrets(),
+            Tab::Machines => engine.has_machines(),
+            Tab::Connections => engine.has_connections(),
+            _ => true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -330,32 +345,40 @@ enum RunField {
 }
 
 impl RunField {
-    const ALL: [RunField; 6] = [
-        RunField::Name,
-        RunField::Ports,
-        RunField::Env,
-        RunField::Volumes,
-        RunField::Secrets,
-        RunField::Command,
-    ];
+    /// Fields shown in the Run dialog. Docker has no standalone secrets, so the
+    /// Secrets row is omitted there.
+    fn fields() -> Vec<RunField> {
+        let mut fields = vec![
+            RunField::Name,
+            RunField::Ports,
+            RunField::Env,
+            RunField::Volumes,
+        ];
+        if !podman::is_docker() {
+            fields.push(RunField::Secrets);
+        }
+        fields.push(RunField::Command);
+        fields
+    }
 
     fn index(self) -> usize {
-        match self {
-            RunField::Name => 0,
-            RunField::Ports => 1,
-            RunField::Env => 2,
-            RunField::Volumes => 3,
-            RunField::Secrets => 4,
-            RunField::Command => 5,
-        }
+        Self::fields()
+            .iter()
+            .position(|field| *field == self)
+            .unwrap_or_default()
     }
 
     fn from_index(index: usize) -> Self {
-        Self::ALL.get(index).copied().unwrap_or(RunField::Name)
+        Self::fields().get(index).copied().unwrap_or(RunField::Name)
     }
 
     fn next(self) -> Self {
-        Self::ALL[(self.index() + 1) % Self::ALL.len()]
+        let fields = Self::fields();
+        let current = fields
+            .iter()
+            .position(|field| *field == self)
+            .unwrap_or_default();
+        fields[(current + 1) % fields.len()]
     }
 }
 
@@ -995,6 +1018,9 @@ pub struct Selkie {
     error: Option<String>,
     loading: bool,
     refresh_pending: bool,
+    /// Bumped whenever the engine behind the app changes, so a fetch that
+    /// started against the previous engine is discarded when it lands.
+    engine_generation: u64,
     busy: Option<String>,
     last_updated: Option<Instant>,
 
@@ -1089,9 +1115,18 @@ pub struct Selkie {
 
 impl Selkie {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let settings = Settings::load();
+        let mut settings = Settings::load();
         set_kind(settings.theme);
-        let tab = settings.tab;
+        // `main` already applied settings.engine (and the connection) before
+        // opening the window.
+        let tab = if settings.tab.supported_by(settings.engine) {
+            settings.tab
+        } else {
+            // A Podman-only view was open when Docker was selected last time.
+            settings.tab = Tab::Containers;
+            settings.save();
+            Tab::Containers
+        };
         let mut view = Self {
             tab,
             settings,
@@ -1100,6 +1135,7 @@ impl Selkie {
             error: None,
             loading: false,
             refresh_pending: false,
+            engine_generation: 0,
             busy: None,
             last_updated: None,
             events_task: None,

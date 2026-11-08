@@ -17,6 +17,10 @@ pub struct Snapshot {
 
 /// Fetch the engine version, all images and all containers.
 pub fn snapshot() -> Result<Snapshot, String> {
+    if engine::is_docker() {
+        return docker::snapshot();
+    }
+
     let version = query(&["--version"])?.trim().to_string();
     let images_raw = query(&["images", "--format", "json"])?;
     let containers_raw = query(&["ps", "-a", "--format", "json"])?;
@@ -51,7 +55,9 @@ pub struct SystemInfo {
     pub kernel: String,
     pub cpus: u64,
     pub memory_total: u64,
-    pub memory_free: u64,
+    /// `None` when the engine does not report it (Docker's API has no free-memory
+    /// figure, and the local host's would be wrong for a VM or remote daemon).
+    pub memory_free: Option<u64>,
     pub rootless: bool,
     pub remote: bool,
     pub storage_driver: String,
@@ -73,23 +79,24 @@ impl SystemInfo {
     }
 
     pub fn memory_label(&self) -> String {
-        format!(
-            "{} free of {} ({}% used)",
-            human_size(self.memory_free),
-            human_size(self.memory_total),
-            self.memory_used_percent()
-        )
+        match self.memory_free {
+            Some(free) => format!(
+                "{} free of {} ({}% used)",
+                human_size(free),
+                human_size(self.memory_total),
+                self.memory_used_percent().unwrap_or(0)
+            ),
+            None => format!("{} total", human_size(self.memory_total)),
+        }
     }
 
-    /// Share of host memory in use, 0-100.
-    pub fn memory_used_percent(&self) -> u64 {
+    /// Share of host memory in use, 0-100, when the engine reports free memory.
+    pub fn memory_used_percent(&self) -> Option<u64> {
+        let free = self.memory_free?;
         if self.memory_total == 0 {
-            return 0;
+            return None;
         }
-        self.memory_total
-            .saturating_sub(self.memory_free)
-            .saturating_mul(100)
-            / self.memory_total
+        Some(self.memory_total.saturating_sub(free).saturating_mul(100) / self.memory_total)
     }
 }
 
@@ -137,6 +144,10 @@ pub struct Dashboard {
 }
 
 pub fn dashboard() -> Result<Dashboard, String> {
+    if engine::is_docker() {
+        return docker::dashboard();
+    }
+
     Ok(Dashboard {
         info: system_info()?,
         disk: disk_usage()?,
@@ -274,7 +285,7 @@ impl RawInfo {
             kernel: self.host.kernel,
             cpus: self.host.cpus,
             memory_total: self.host.memory_total,
-            memory_free: self.host.memory_free,
+            memory_free: Some(self.host.memory_free),
             rootless: self.host.security.rootless,
             remote: self.host.service_is_remote,
             storage_driver: self.store.storage_driver,

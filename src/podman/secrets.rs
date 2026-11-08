@@ -24,6 +24,7 @@ pub struct Secret {
 /// template there), and the template output only carries relative dates, so
 /// the IDs are listed and then inspected in one call.
 pub fn secret_list() -> Result<Vec<Secret>, String> {
+    engine::podman_only("secrets")?;
     // A secret removed between the two calls makes `inspect` fail; one retry
     // with a fresh listing covers that race.
     match list_and_inspect() {
@@ -80,6 +81,7 @@ pub fn validate_secret_name(value: &str) -> Result<&str, String> {
 /// `podman secret create <name> -`; the data is written to stdin by
 /// [`create_secret`], so it never appears on the command line.
 pub fn secret_create_command(name: &str) -> Result<Command, String> {
+    engine::podman_only("secrets")?;
     let name = validate_secret_name(name)?;
     let mut command = base_command();
     command.args(["secret", "create", name, "-"]);
@@ -131,6 +133,7 @@ pub fn create_secret(name: &str, data: &str) -> Result<String, String> {
 }
 
 pub fn remove_secret(id: &str) -> Result<String, String> {
+    engine::podman_only("secrets")?;
     run(&["secret", "rm", id])
 }
 

@@ -24,18 +24,24 @@ fn main() {
 
     Application::new().run(move |cx: &mut App| {
         let mut settings = Settings::load();
+        podman::set_engine(settings.engine);
         // A connection remembered from a previous run may have been removed from
         // the Podman configuration; fall back to the default engine if so.
-        if let Some(name) = settings.connection.clone() {
-            let known = podman::connection_list()
-                .map(|list| list.iter().any(|connection| connection.name == name))
-                .unwrap_or(true);
-            if !known {
-                settings.connection = None;
-                settings.save();
+        // Docker has no Podman connections, so the check only runs for Podman.
+        if settings.engine == podman::EngineKind::Podman {
+            if let Some(name) = settings.connection.clone() {
+                let known = podman::connection_list()
+                    .map(|list| list.iter().any(|connection| connection.name == name))
+                    .unwrap_or(true);
+                if !known {
+                    settings.connection = None;
+                    settings.save();
+                }
             }
+            podman::set_connection(settings.connection.clone());
+        } else {
+            podman::set_connection(None);
         }
-        podman::set_connection(settings.connection.clone());
 
         let window_bounds = restored_bounds(cx, &settings);
 

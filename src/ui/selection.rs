@@ -86,16 +86,69 @@ impl Selkie {
         cx.notify();
     }
 
+    /// Switch the container engine (Podman CLI or the Docker HTTP API).
+    pub(super) fn use_engine(&mut self, kind: EngineKind, cx: &mut Context<Self>) {
+        if self.settings.engine == kind {
+            return;
+        }
+        if self.output_run.is_some() {
+            self.toast(
+                ToastKind::Error,
+                "Wait for the running build or compose command before switching engines",
+                cx,
+            );
+            return;
+        }
+        self.settings.engine = kind;
+        self.settings.save();
+        podman::set_engine(kind);
+        // Docker ignores Podman's connection setting; clear or restore the
+        // runtime value so switching back to Podman targets the saved connection.
+        if kind == EngineKind::Docker {
+            podman::set_connection(None);
+        } else {
+            podman::set_connection(self.settings.connection.clone());
+        }
+        // Also falls back from a Podman-only view.
+        self.reset_engine(cx);
+        self.load_accounts();
+        self.toast(
+            ToastKind::Success,
+            format!("Using the {} engine", kind.label()),
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// Fall back from a Podman-only view when Docker has no such feature.
+    fn ensure_supported_tab(&mut self, cx: &mut Context<Self>) {
+        if self.tab.supported_by(podman::engine()) {
+            return;
+        }
+        self.tab = Tab::Containers;
+        self.settings.tab = Tab::Containers;
+        self.settings.save();
+        self.sort = None;
+        self.search.clear();
+        self.account_menu = None;
+        self.clear_selection();
+        cx.notify();
+    }
+
     /// The engine behind the app changed (another connection, or the current
     /// one now points elsewhere): drop the previous engine's data, streams and
     /// selection, keep the local machine/connection lists, and start over.
     pub(super) fn reset_engine(&mut self, cx: &mut Context<Self>) {
+        self.engine_generation += 1;
+        self.ensure_supported_tab(cx);
         self.stop_logs();
         self.stop_terminal();
         self.stop_events();
         self.dashboard = None;
         self.dashboard_fetched = None;
         self.dashboard_error = None;
+        self.local = LocalState::default();
+        self.local_fetched = None;
         self.logs.clear();
         self.logs_error = None;
         self.snapshot = Snapshot::default();

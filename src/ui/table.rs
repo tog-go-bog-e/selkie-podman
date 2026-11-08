@@ -583,10 +583,12 @@ impl Selkie {
             )
         } else {
             match &self.error {
-                Some(error) => ("Cannot reach the Podman engine", error.clone(), "Retry"),
-                None if self.loading => {
-                    ("Loading…", "Asking podman for data.".to_string(), "Retry")
-                }
+                Some(error) => ("Cannot reach the engine", error.clone(), "Retry"),
+                None if self.loading => (
+                    "Loading…",
+                    format!("Asking {} for data.", podman::engine().label()),
+                    "Retry",
+                ),
                 None => match self.tab {
                     Tab::Dashboard => (
                         "Nothing to show",
@@ -601,8 +603,10 @@ impl Selkie {
                     ),
                     Tab::Compose => (
                         "No compose projects",
-                        "Start a project with `podman compose up -d` and its containers will show up here."
-                            .to_string(),
+                        format!(
+                            "Start a project with `{} compose up -d` and its containers will show up here.",
+                            podman::engine().binary()
+                        ),
                         "Retry",
                     ),
                     Tab::Images => (

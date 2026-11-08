@@ -43,42 +43,50 @@ impl Selkie {
             .filter(|item| item.running)
             .count();
 
+        let engine = podman::engine();
+        let mut resources = vec![
+            stat_card(
+                "Containers",
+                self.snapshot.containers.len().to_string(),
+                format!("{running_containers} running"),
+            ),
+            stat_card(
+                "Images",
+                self.snapshot.images.len().to_string(),
+                "in local storage".to_string(),
+            ),
+        ];
+        if engine.has_pods() {
+            resources.push(stat_card(
+                "Pods",
+                self.snapshot.pods.len().to_string(),
+                format!("{running_pods} running"),
+            ));
+        }
+        let mut storage = vec![
+            stat_card(
+                "Volumes",
+                self.snapshot.volumes.len().to_string(),
+                format!("{mounted_volumes} in use"),
+            ),
+            stat_card(
+                "Networks",
+                self.snapshot.networks.len().to_string(),
+                "configured".to_string(),
+            ),
+        ];
+        if engine.has_machines() {
+            storage.push(stat_card(
+                "Machines",
+                self.local.machines.len().to_string(),
+                format!("{running_machines} running"),
+            ));
+        }
+
         content = content
             .child(section_title("RESOURCES"))
-            .child(card_row(vec![
-                stat_card(
-                    "Containers",
-                    self.snapshot.containers.len().to_string(),
-                    format!("{running_containers} running"),
-                ),
-                stat_card(
-                    "Images",
-                    self.snapshot.images.len().to_string(),
-                    "in local storage".to_string(),
-                ),
-                stat_card(
-                    "Pods",
-                    self.snapshot.pods.len().to_string(),
-                    format!("{running_pods} running"),
-                ),
-            ]))
-            .child(card_row(vec![
-                stat_card(
-                    "Volumes",
-                    self.snapshot.volumes.len().to_string(),
-                    format!("{mounted_volumes} in use"),
-                ),
-                stat_card(
-                    "Networks",
-                    self.snapshot.networks.len().to_string(),
-                    "configured".to_string(),
-                ),
-                stat_card(
-                    "Machines",
-                    self.local.machines.len().to_string(),
-                    format!("{running_machines} running"),
-                ),
-            ]));
+            .child(card_row(resources))
+            .child(card_row(storage));
 
         content = content.child(section_title("DISK USAGE"));
         match &self.dashboard {
@@ -88,7 +96,10 @@ impl Selkie {
                 ));
             }
             Some(_) => {
-                content = content.child(muted_text("Podman reported no disk usage."));
+                content = content.child(muted_text(format!(
+                    "{} reported no disk usage.",
+                    podman::engine().label()
+                )));
             }
             None if self.loading => {
                 content = content.child(muted_text("Measuring disk usage…"));
@@ -109,11 +120,11 @@ impl Selkie {
         content = content.child(section_title("ENGINE"));
         if let Some(data) = &self.dashboard {
             let info = &data.info;
-            let connection = self
-                .settings
-                .connection
-                .clone()
-                .unwrap_or_else(|| "Podman default".to_string());
+            let connection = match (podman::engine(), &self.settings.connection) {
+                (EngineKind::Docker, _) => "Docker API".to_string(),
+                (EngineKind::Podman, Some(name)) => name.clone(),
+                (EngineKind::Podman, None) => "Podman default".to_string(),
+            };
             let socket = if info.socket_path.is_empty() {
                 "-".to_string()
             } else {

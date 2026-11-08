@@ -127,23 +127,37 @@ impl PodAction {
 }
 
 pub fn pod_action(id: &str, action: PodAction) -> Result<String, String> {
+    engine::podman_only("pods")?;
     run(&["pod", action.verb(), id])
 }
 
 pub fn remove_pod(id: &str) -> Result<String, String> {
+    engine::podman_only("pods")?;
     run(&["pod", "rm", "-f", id])
 }
 
 pub fn remove_volume(name: &str) -> Result<String, String> {
+    if engine::is_docker() {
+        return docker::remove_volume(name);
+    }
     run(&["volume", "rm", "-f", name])
 }
 
-pub fn volume_create_command(name: &str, driver: Option<&str>) -> Result<Command, String> {
+/// Trimmed, validated `volume create` arguments: the name and optional driver.
+fn volume_args<'a>(
+    name: &'a str,
+    driver: Option<&'a str>,
+) -> Result<(&'a str, Option<&'a str>), String> {
     let name = validate_volume_name(name)?;
     let driver = driver.map(str::trim).filter(|value| !value.is_empty());
     if let Some(driver) = driver {
         validate_driver(driver)?;
     }
+    Ok((name, driver))
+}
+
+pub fn volume_create_command(name: &str, driver: Option<&str>) -> Result<Command, String> {
+    let (name, driver) = volume_args(name, driver)?;
     let mut command = base_command();
     command.args(["volume", "create"]);
     if let Some(driver) = driver {
@@ -154,19 +168,34 @@ pub fn volume_create_command(name: &str, driver: Option<&str>) -> Result<Command
 }
 
 pub fn create_volume(name: &str, driver: Option<&str>) -> Result<String, String> {
+    if engine::is_docker() {
+        let (name, driver) = volume_args(name, driver)?;
+        return docker::create_volume(name, driver);
+    }
     execute(volume_create_command(name, driver)?, "volume create")
 }
 
 pub fn prune_volumes() -> Result<String, String> {
+    if engine::is_docker() {
+        return docker::prune_volumes();
+    }
     run(&["volume", "prune", "-f"])
 }
 
-pub fn network_create_command(
-    name: &str,
-    driver: Option<&str>,
-    subnet: Option<&str>,
-    gateway: Option<&str>,
-) -> Result<Command, String> {
+/// Trimmed, validated `network create` arguments.
+struct NetworkArgs<'a> {
+    name: &'a str,
+    driver: Option<&'a str>,
+    subnet: Option<&'a str>,
+    gateway: Option<&'a str>,
+}
+
+fn network_args<'a>(
+    name: &'a str,
+    driver: Option<&'a str>,
+    subnet: Option<&'a str>,
+    gateway: Option<&'a str>,
+) -> Result<NetworkArgs<'a>, String> {
     let name = validate_network_name(name)?;
     let driver = driver.map(str::trim).filter(|value| !value.is_empty());
     let subnet = subnet.map(str::trim).filter(|value| !value.is_empty());
@@ -180,19 +209,33 @@ pub fn network_create_command(
     if let Some(gateway) = gateway {
         validate_gateway(gateway)?;
     }
+    Ok(NetworkArgs {
+        name,
+        driver,
+        subnet,
+        gateway,
+    })
+}
 
+pub fn network_create_command(
+    name: &str,
+    driver: Option<&str>,
+    subnet: Option<&str>,
+    gateway: Option<&str>,
+) -> Result<Command, String> {
+    let args = network_args(name, driver, subnet, gateway)?;
     let mut command = base_command();
     command.args(["network", "create"]);
-    if let Some(driver) = driver {
+    if let Some(driver) = args.driver {
         command.args(["--driver", driver]);
     }
-    if let Some(subnet) = subnet {
+    if let Some(subnet) = args.subnet {
         command.args(["--subnet", subnet]);
     }
-    if let Some(gateway) = gateway {
+    if let Some(gateway) = args.gateway {
         command.args(["--gateway", gateway]);
     }
-    command.arg(name);
+    command.arg(args.name);
     Ok(command)
 }
 
@@ -202,6 +245,10 @@ pub fn create_network(
     subnet: Option<&str>,
     gateway: Option<&str>,
 ) -> Result<String, String> {
+    if engine::is_docker() {
+        let args = network_args(name, driver, subnet, gateway)?;
+        return docker::create_network(args.name, args.driver, args.subnet, args.gateway);
+    }
     execute(
         network_create_command(name, driver, subnet, gateway)?,
         "network create",
@@ -209,6 +256,9 @@ pub fn create_network(
 }
 
 pub fn prune_networks() -> Result<String, String> {
+    if engine::is_docker() {
+        return docker::prune_networks();
+    }
     run(&["network", "prune", "-f"])
 }
 
@@ -226,10 +276,12 @@ pub fn pod_create_command(name: &str, ports: &[String]) -> Result<Command, Strin
 }
 
 pub fn create_pod(name: &str, ports: &[String]) -> Result<String, String> {
+    engine::podman_only("pods")?;
     execute(pod_create_command(name, ports)?, "pod create")
 }
 
 pub fn kube_play_command(path: &str) -> Result<Command, String> {
+    engine::podman_only("pods")?;
     let path = validate_kube_file(path)?;
     let mut command = base_command();
     command.args(["kube", "play", path]);
@@ -304,21 +356,31 @@ pub fn validate_pod_name(value: &str) -> Result<&str, String> {
 }
 
 pub fn remove_network(name: &str) -> Result<String, String> {
+    if engine::is_docker() {
+        return docker::remove_network(name);
+    }
     run(&["network", "rm", "-f", name])
 }
 
 pub fn inspect_pod(id: &str) -> Result<PodDetails, String> {
+    engine::podman_only("pods")?;
     let json = query(&["pod", "inspect", id])?;
     parse_pod_inspect(json.trim()).map_err(|err| format!("could not inspect pod {id}: {err}"))
 }
 
 pub fn inspect_volume(name: &str) -> Result<VolumeDetails, String> {
+    if engine::is_docker() {
+        return docker::inspect_volume(name);
+    }
     let json = query(&["volume", "inspect", name])?;
     parse_volume_inspect(json.trim())
         .map_err(|err| format!("could not inspect volume {name}: {err}"))
 }
 
 pub fn inspect_network(name: &str) -> Result<NetworkDetails, String> {
+    if engine::is_docker() {
+        return docker::inspect_network(name);
+    }
     let json = query(&["network", "inspect", name])?;
     parse_network_inspect(json.trim())
         .map_err(|err| format!("could not inspect network {name}: {err}"))

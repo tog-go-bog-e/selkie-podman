@@ -24,7 +24,10 @@ impl Selkie {
         let Some(project) = project else {
             return content
                 .child(section_title("DETAILS"))
-                .child(muted_text("This project is no longer listed by Podman."));
+                .child(muted_text(format!(
+                    "This project is no longer listed by {}.",
+                    podman::engine().label()
+                )));
         };
 
         content = content

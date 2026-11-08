@@ -57,6 +57,9 @@ pub fn parse_images(json: &str) -> Result<Vec<Image>, String> {
 }
 
 pub fn remove_image(id: &str) -> Result<String, String> {
+    if engine::is_docker() {
+        return docker::remove_image(id);
+    }
     run(&["rmi", "-f", id])
 }
 
@@ -94,6 +97,9 @@ impl ImageHistoryEntry {
 }
 
 pub fn image_history(image: &str) -> Result<Vec<ImageHistoryEntry>, String> {
+    if engine::is_docker() {
+        return docker::image_history(image);
+    }
     let json = query(&["history", "--format", "json", image])?;
     parse_image_history(&json)
 }
@@ -508,8 +514,10 @@ pub fn build_command(options: &BuildOptions) -> Result<Command, String> {
         platforms.push(validate_platform(platform)?.to_string());
     }
     // Podman stores one tag for a single platform, but a manifest list (named
-    // with `--manifest`, not `-t`) when several are built at once.
-    let multi_platform = platforms.len() > 1;
+    // with `--manifest`, not `-t`) when several are built at once. Docker's
+    // CLI has no `--manifest` build flag; it keeps the tag and lets the
+    // builder pick the platforms it can produce.
+    let multi_platform = platforms.len() > 1 && engine() == EngineKind::Podman;
     if multi_platform && tag.contains('@') {
         return Err("a multi-platform build needs a manifest name, not a digest".to_string());
     }

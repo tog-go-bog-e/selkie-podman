@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::podman::EngineKind;
+
 use super::theme::ThemeKind;
 use super::Tab;
 
@@ -46,8 +48,12 @@ pub struct Settings {
     pub details_width: f32,
     #[serde(default)]
     pub window: Option<WindowState>,
+    /// Container engine used for every view. Podman is the default; Docker is
+    /// reached through its HTTP API.
+    #[serde(default)]
+    pub engine: EngineKind,
     /// Named Podman connection used for every command; `None` means Podman's
-    /// default (usually the local engine).
+    /// default (usually the local engine). Ignored by the Docker engine.
     #[serde(default)]
     pub connection: Option<String>,
 }
@@ -114,6 +120,7 @@ impl Default for Settings {
             sidebar_width: default_sidebar_width(),
             details_width: default_details_width(),
             window: None,
+            engine: EngineKind::default(),
             connection: None,
         }
     }
