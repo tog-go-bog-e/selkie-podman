@@ -156,10 +156,8 @@ impl Selkie {
                 .iter()
                 .enumerate()
                 .filter(|(_, connection)| {
-                    matches_query(
-                        query,
-                        &[&connection.name, &connection.uri, &connection.identity],
-                    )
+                    let key = self.connection_key(connection);
+                    matches_query(query, &[&connection.name, &connection.uri, &key])
                 })
                 .map(|(index, _)| index)
                 .collect(),

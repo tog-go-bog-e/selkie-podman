@@ -1,5 +1,6 @@
 //! Persisted user settings.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,13 @@ pub struct Settings {
     /// default (usually the local engine). Ignored by the API engines.
     #[serde(default)]
     pub connection: Option<String>,
+    /// SSH identity files remembered per connection name. Encrypted keys cannot
+    /// live in Podman's connection record, so their path is cached here instead.
+    #[serde(default)]
+    pub connection_keys: HashMap<String, String>,
+    /// Last identity picked in the connection form, offered for new connections.
+    #[serde(default)]
+    pub last_connection_key: Option<String>,
 }
 
 /// Panes inside the Settings page.
@@ -122,6 +130,8 @@ impl Default for Settings {
             window: None,
             engine: EngineKind::default(),
             connection: None,
+            connection_keys: HashMap::new(),
+            last_connection_key: None,
         }
     }
 }

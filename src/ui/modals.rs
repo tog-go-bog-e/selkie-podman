@@ -253,7 +253,7 @@ impl Selkie {
             Modal::CreateConnection { form } | Modal::EditConnection { form, .. } => {
                 let identity = form.identity();
                 if let Err(error) =
-                    podman::connection_add_command(&form.name, &form.uri, identity.as_deref())
+                    podman::validate_connection_form(&form.name, &form.uri, identity.as_deref())
                 {
                     self.toast(ToastKind::Error, error, cx);
                     self.modal_focus.focus(window);
@@ -274,6 +274,13 @@ impl Selkie {
                         self.modal_focus.focus(window);
                         return;
                     }
+                }
+            }
+            Modal::SshPassphrase { input, .. } => {
+                if input.is_empty() {
+                    self.toast(ToastKind::Error, "enter the key passphrase", cx);
+                    self.modal_focus.focus(window);
+                    return;
                 }
             }
             Modal::CreateMachine {
@@ -623,14 +630,11 @@ impl Selkie {
                 );
             }
             Modal::CreateConnection { form } => {
-                let name = form.trimmed_name();
-                let uri = form.trimmed_uri();
-                let identity = form.identity();
-                self.run_task(
-                    format!("Adding connection {name}…"),
-                    format!("Added connection {name}"),
-                    AfterAction::Refresh,
-                    move || podman::connection_add(&name, &uri, identity.as_deref()),
+                self.save_connection(
+                    None,
+                    form.trimmed_name(),
+                    form.trimmed_uri(),
+                    form.identity(),
                     cx,
                 );
             }
@@ -669,13 +673,22 @@ impl Selkie {
                 }
             }
             Modal::EditConnection { original, form } => {
-                self.update_connection(
-                    original,
+                self.save_connection(
+                    Some(original),
                     form.trimmed_name(),
                     form.trimmed_uri(),
                     form.identity(),
                     cx,
                 );
+            }
+            Modal::SshPassphrase {
+                connection,
+                key,
+                input,
+                target,
+                ..
+            } => {
+                self.unlock_ssh_key(connection, key, input, target, cx);
             }
             Modal::DeleteConnection { name } => self.remove_connection(name, cx),
             Modal::DeleteMachine { name } => {
@@ -801,6 +814,7 @@ impl Selkie {
                 }
             }
             Some(Modal::PushImage { destination, .. }) => edit_text(destination, event, cx),
+            Some(Modal::SshPassphrase { input, .. }) => edit_text(input, event, cx),
             Some(Modal::RegistryLogout { registry }) => edit_text(registry, event, cx),
             Some(Modal::RegistryLogin {
                 field,

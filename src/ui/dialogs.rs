@@ -869,7 +869,12 @@ impl Selkie {
                         false,
                         cx.listener(move |this, _, window, cx| {
                             this.close_context_menu(cx);
-                            this.open_modal(Modal::edit_connection(&edit_connection), window, cx);
+                            let key = this.connection_key(&edit_connection);
+                            this.open_modal(
+                                Modal::edit_connection(&edit_connection, &key),
+                                window,
+                                cx,
+                            );
                         }),
                     ));
                     let delete_name = connection.name.clone();
@@ -957,6 +962,7 @@ impl Selkie {
         let masked_password = match modal {
             Modal::RegistryLogin { password, .. } => "•".repeat(password.chars().count()),
             Modal::CreateSecret { data, .. } => "•".repeat(data.chars().count()),
+            Modal::SshPassphrase { input, .. } => "•".repeat(input.chars().count()),
             _ => String::new(),
         };
         let (title, body, inputs, confirm, danger): ModalSpec = match modal {
@@ -1316,7 +1322,7 @@ impl Selkie {
             Modal::CreateConnection { form } => (
                 "Add connection",
                 Some(
-                    "Runs `podman system connection add`. For SSH, use the remote Podman socket (ssh://user@host:22/run/user/1000/podman/podman.sock). Leave the identity empty to use the running SSH agent; interactive password prompts are not supported."
+                    "Runs `podman system connection add`. For SSH, use the remote Podman socket (ssh://user@host:22/run/user/1000/podman/podman.sock). Leave the identity empty to use the running SSH agent. A passphrase-protected key is remembered by Selkie and unlocked on first use; interactive passwords are not supported."
                         .to_string(),
                 ),
                 connection_form_fields(form),
@@ -1326,7 +1332,7 @@ impl Selkie {
             Modal::EditConnection { original, form } => (
                 "Edit connection",
                 Some(format!(
-                    "Updates “{original}” with `podman system connection add` (renaming it first when the name changes). Clearing the identity makes Podman use the running SSH agent; interactive password prompts are not supported.{}",
+                    "Updates “{original}” with `podman system connection add` (renaming it first when the name changes). Clearing the identity makes Podman use the running SSH agent. A passphrase-protected key is remembered by Selkie and unlocked on first use.{}",
                     machine_connection_warning(original)
                 )),
                 connection_form_fields(form),
@@ -1342,6 +1348,29 @@ impl Selkie {
                 Vec::new(),
                 "Delete",
                 true,
+            ),
+            Modal::SshPassphrase {
+                connection,
+                key,
+                error,
+                ..
+            } => (
+                "Unlock SSH key",
+                Some(format!(
+                    "Enter the passphrase for “{key}” (connection “{connection}”). It unlocks the key in a private ssh-agent for this session and is not saved.{}",
+                    error
+                        .as_ref()
+                        .map(|error| format!(" The previous attempt failed: {error}"))
+                        .unwrap_or_default()
+                )),
+                vec![(
+                    "Passphrase",
+                    masked_password.as_str(),
+                    "key passphrase",
+                    true,
+                )],
+                "Unlock",
+                false,
             ),
             Modal::DeleteMachine { name } => (
                 "Delete machine?",

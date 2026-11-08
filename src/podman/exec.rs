@@ -149,11 +149,25 @@ pub fn connection() -> Option<String> {
     connection_slot().read().ok().and_then(|slot| slot.clone())
 }
 
-/// Point Podman at the session's ssh-agent when the app did not inherit
-/// `SSH_AUTH_SOCK` (a desktop launch does not always get a shell-exported one).
+/// Point Podman at the right ssh-agent for the command's connection.
 ///
-/// Only applies when the variable is unset: an explicit value always wins.
-pub(super) fn apply_ssh_agent(command: &mut Command) {
+/// A connection with an app-managed key uses its private agent (only that key
+/// is loaded). A connection with a Podman identity does not need an agent at
+/// all, and offering unrelated keys is exactly what makes sshd reject the
+/// session with "too many authentication failures". With neither, fall back to
+/// the session agent so a desktop launch that did not inherit `SSH_AUTH_SOCK`
+/// still works for connections that rely on it.
+pub(super) fn apply_ssh_agent(command: &mut Command, connection: Option<&str>) {
+    if let Some(name) = connection {
+        if let Some(socket) = ssh::agent_socket(name) {
+            command.env("SSH_AUTH_SOCK", socket);
+            return;
+        }
+        if ssh::has_cached_key(name) || ssh::has_identity(name) {
+            command.env_remove("SSH_AUTH_SOCK");
+            return;
+        }
+    }
     if std::env::var_os("SSH_AUTH_SOCK").is_some() {
         return;
     }
@@ -185,7 +199,7 @@ pub(super) fn ssh_agent_socket(runtime: &std::path::Path) -> Option<std::path::P
 pub fn base_command() -> Command {
     let mut command = Command::new(engine().binary());
     if engine() == EngineKind::Podman {
-        apply_ssh_agent(&mut command);
+        apply_ssh_agent(&mut command, connection().as_deref());
         apply_connection(&mut command, connection().as_deref());
     }
     command

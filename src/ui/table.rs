@@ -381,7 +381,12 @@ impl Selkie {
                             theme().accent,
                             theme().accent_soft,
                             cx.listener(|this, _, window, cx| {
-                                this.open_modal(Modal::create_connection(), window, cx)
+                                let key = this
+                                    .settings
+                                    .last_connection_key
+                                    .clone()
+                                    .unwrap_or_default();
+                                this.open_modal(Modal::create_connection(&key), window, cx)
                             }),
                         ))
                         .child(pill_button(

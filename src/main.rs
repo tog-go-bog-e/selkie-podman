@@ -16,6 +16,13 @@ const MIN_WIDTH: f32 = 1040.0;
 const MIN_HEIGHT: f32 = 600.0;
 
 fn main() {
+    // `ssh-add` re-invokes this binary for passphrase prompts. That child must
+    // not touch the single-instance lock or start the UI.
+    if std::env::var_os("SELKIE_ASKPASS_FD").is_some() {
+        podman::ssh::answer_askpass();
+        return;
+    }
+
     // A second launch asks the running instance to come to the front and exits.
     let Some(signals) = desktop::claim_single_instance() else {
         return;
@@ -24,6 +31,15 @@ fn main() {
 
     Application::new().run(move |cx: &mut App| {
         let mut settings = Settings::load();
+        // Agents from a crash/previous run must not linger (the app is
+        // single-instance, so everything in our agent directory is ours).
+        podman::ssh::cleanup_stale_agents();
+        podman::ssh::set_cached_keys(
+            settings
+                .connection_keys
+                .iter()
+                .map(|(name, path)| (name.clone(), path.clone())),
+        );
         podman::set_engine(settings.engine);
         // A connection remembered from a previous run may have been removed from
         // the Podman configuration; fall back to the default engine if so.
@@ -140,6 +156,9 @@ fn main() {
 
         cx.activate(true);
     });
+
+    // Normal quit: stop the private ssh-agents along with the app.
+    podman::ssh::shutdown();
 }
 
 /// Restore the last window size and maximized state.

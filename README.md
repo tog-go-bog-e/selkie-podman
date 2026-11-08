@@ -96,16 +96,18 @@ engine**.
   default) with a reachability **STATUS**, and choose which engine this app talks
   to. **Add connection** runs `podman system connection add` for an SSH
   (`ssh://user@host:22/run/user/1000/podman/podman.sock`) or `unix://` endpoint,
-  with an optional identity file (`~` is expanded). Leaving the identity empty
-  uses the running **ssh-agent**; if the app did not inherit `SSH_AUTH_SOCK`,
-  Podman is pointed at `$XDG_RUNTIME_DIR/openssh_agent` or
-  `$XDG_RUNTIME_DIR/keyring/ssh` when present. Interactive password or
-  passphrase prompts cannot be answered in-app, so load the key into the agent
-  or pick an identity file that needs no passphrase. **Check all**, a row's
-  **Check** or the details action bar probes
+  with an optional identity file (`~` is expanded). Plain keys stay in Podman's
+  connection; a **passphrase-protected key is remembered by the app** and
+  unlocked with a prompt on first use, running in a private `ssh-agent` that
+  holds only that key — so unrelated agent keys can never trip sshd's
+  `MaxAuthTries`. Leaving the identity empty uses the running **ssh-agent**; if
+  the app did not inherit `SSH_AUTH_SOCK`, Podman is pointed at
+  `$XDG_RUNTIME_DIR/openssh_agent` or `$XDG_RUNTIME_DIR/keyring/ssh` when
+  present. **Check all**, a row's **Check** or the details action bar probes
   each connection with `podman --connection <name> info`; the column, details
-  pane and a toast report `reachable` / `unreachable` with Podman's error.
-  **Edit…** reopens the same form prefilled (a name change renames the
+  pane and a toast report `reachable` / `unreachable` with Podman's error, and
+  **Unlock key** appears while an encrypted key is locked. **Edit…** reopens the
+  same form prefilled with the remembered key (a name change renames the
   connection first, a URI/identity change re-adds it in place) and **Delete…**
   removes it after a confirmation; deleting the connection this app uses falls
   back to Podman's default engine. Switching uses `--connection <name>` for
@@ -400,6 +402,15 @@ the **Connections** tab to make this app talk to the VM.
   machine and connection commands always run locally. **Add connection** builds
   `podman system connection add [--identity FILE] NAME URI` (only `ssh://` and
   absolute `unix://` URIs are accepted, and the identity file must exist).
+  Encrypted identities are handled by `src/podman/ssh.rs`: their path is cached
+  in `settings.json` (Podman cannot read an encrypted `Identity`), the
+  passphrase is asked in a modal and piped to `ssh-add` through an askpass
+  re-invocation of the binary, and each connection gets a private `ssh-agent`
+  holding only that key. Its commands get `SSH_AUTH_SOCK` pointing at that
+  agent; a connection with an identity never falls back to the unrelated
+  session agent, which is what causes sshd's "too many authentication
+  failures". A watchdog stops the agent if the app dies, and the next start
+  cleans up anything left by a crash.
   Reachability probes run in the background, one per connection, with a 15 s
   timeout: on the first visit to the tab, when a new connection appears and on
   demand. Results live in memory per session; switching the engine does not
@@ -571,11 +582,13 @@ prioritized next milestones and verification checklist.
 - Remote engines must already be configured in Podman (SSH keys/agent, socket
   path), or added from the Connections tab. The connection form covers `ssh://`
   and `unix://` only (no `tcp://` TLS options), and reachability results are
-  in-memory and only refreshed on demand. SSH password and key-passphrase
-  prompts cannot be answered because commands run without a TTY; load the key
-  into the ssh-agent (or use an identity file without a passphrase). Compose
-  against a remote connection depends on the compose provider. Switching a
-  connection is local to this app and never runs
+  in-memory and only refreshed on demand. Key passphrases are prompted in the
+  app, but **SSH password prompts are not supported** and neither is host-key
+  confirmation — use a key/agent and make sure the host is in `known_hosts`.
+  Encrypted key paths live in this app's settings rather than Podman's
+  connection record, so other tools using `podman system connection` will not
+  see them. Compose against a remote connection depends on the compose
+  provider. Switching a connection is local to this app and never runs
   `podman system connection default`.
 - No multi-select, bulk actions or command palette yet. Sort is per tab, resets
   on tab switch, and is not persisted.

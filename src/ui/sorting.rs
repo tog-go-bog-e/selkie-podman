@@ -129,12 +129,13 @@ impl Selkie {
                 let item = &self.local.connections[index];
                 match column {
                     1 => text(&item.uri),
-                    2 => text(&item.identity_label()),
+                    2 => text(&self.connection_key(item)),
                     3 => number(match self.connection_checks.get(&item.name) {
                         Some(ConnectionCheck::Reachable) => 0,
                         Some(ConnectionCheck::Checking) => 1,
-                        None => 2,
-                        Some(ConnectionCheck::Unreachable(_)) => 3,
+                        Some(ConnectionCheck::Locked) => 2,
+                        None => 3,
+                        Some(ConnectionCheck::Unreachable(_)) => 4,
                     }),
                     _ => text(&item.name),
                 }

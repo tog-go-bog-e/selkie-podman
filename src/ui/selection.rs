@@ -73,6 +73,30 @@ impl Selkie {
             );
             return;
         }
+        if let Some(name) = &name {
+            if let Some(key) = podman::ssh::needs_unlock(name) {
+                // Ask for the passphrase first; the switch continues after it
+                // is accepted.
+                self.pending_unlock = Some((name.clone(), key, SshUnlockTarget::Activate, None));
+                cx.notify();
+                return;
+            }
+        }
+        self.switch_connection(name, cx);
+    }
+
+    /// Point every command at `name` (or Podman's default). Also used after an
+    /// SSH key is unlocked, where the connection may already be selected but
+    /// its engine data needs a fresh start.
+    pub(super) fn switch_connection(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        if self.output_run.is_some() {
+            self.toast(
+                ToastKind::Error,
+                "Wait for the running compose command before switching engines",
+                cx,
+            );
+            return;
+        }
         self.settings.connection = name.clone();
         self.settings.save();
         podman::set_connection(name.clone());
@@ -154,6 +178,7 @@ impl Selkie {
         self.snapshot = Snapshot::default();
         self.error = None;
         self.selection = None;
+        self.pending_unlock = None;
         self.details = DetailsState::None;
         self.details_tab = DetailsTab::Summary;
         self.raw_view = false;

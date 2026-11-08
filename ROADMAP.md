@@ -523,9 +523,8 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 - [x] SSH connections with an empty identity use the running **ssh-agent**. If
       the app did not inherit `SSH_AUTH_SOCK` (common for desktop launches), the
       engine and probe commands are pointed at `$XDG_RUNTIME_DIR/openssh_agent`
-      or `$XDG_RUNTIME_DIR/keyring/ssh` when a socket exists there. Interactive
-      password/passphrase prompts cannot be answered because commands run
-      without a TTY, and the dialog says so
+      or `$XDG_RUNTIME_DIR/keyring/ssh` when a socket exists there. (Key
+      passphrases are now handled by the app; see the SSH key section below.)
 - [x] **Edit…** (details action bar, row hover, context menu) reopens the form
       prefilled. Podman has no edit command, so a name change runs
       `system connection rename` first (keeping the default flag) and the
@@ -549,6 +548,34 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       only update the column and details pane to avoid noise
 - [x] The in-use connection keeps an accent dot in the row and “Podman default”
       moves to the subtitle, so STATUS no longer doubles as the in-use marker
+
+### Done (SSH key cache, passphrases and private agents)
+
+- [x] Encrypted identity paths are cached per connection in `settings.json`,
+      because Podman's SSH client cannot read an encrypted `Identity` (it fails
+      with `bcrypt_pbkdf: empty password` even when a TTY or askpass is
+      available). Podman's connection record therefore stays without `Identity`
+      for those keys.
+- [x] A masked **Unlock SSH key** modal asks for the passphrase on first use
+      and reopens with the error after a wrong one; the passphrase is piped to
+      `ssh-add` through a hidden `--askpass` re-invocation of the binary (an
+      inherited fd, not argv/env/disk) and is never saved.
+- [x] Each connection gets a private `ssh-agent` holding only its key; commands
+      for a connection with an identity never fall back to the shared session
+      agent, which is what caused sshd's "too many authentication failures".
+      Plain identities keep working through Podman and are also identity-only.
+- [x] Prompts on startup when the remembered connection has a locked key, on
+      **Use in this app**, and on **Check** for a locked connection; the details
+      action bar has **Unlock key**, rows show `key locked`, and automatic
+      probes mark locked keys without interrupting.
+- [x] Lifetime: a small watchdog stops the agent when the app dies (including
+      `SIGKILL`), a normal quit stops all agents, and startup cleans agents and
+      sockets left by a crash.
+- [x] Live verification on 2026-11-08: encrypted key + fake SSH host; cancel,
+      wrong passphrase (error + retry), correct passphrase (agent holds exactly
+      one key), Podman reaches DNS instead of failing on the identity, the
+      locked status clears, Edit is prefilled from the cache, saving keeps
+      Podman's `Identity` empty, and SIGKILL removes the agent within ~2 s.
 
 ### Done (packaging & desktop integration)
 
@@ -647,6 +674,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Registries | `podman push` with a validated destination; `podman login --password-stdin` / `podman logout` with credentials kept out of argv; loopback registries skip TLS verification |
 | Accounts | Registry logins parsed from Podman's auth files (`REGISTRY_AUTH_FILE`, runtime/config `auth.json`, Docker config); username and a masked password (or `token`), a `⋮` menu with Log out, Add registry, and Configure buttons for Docker Hub/Quay/GitHub/GCR |
 | Connections | `podman system connection list` read locally; **Add**/**Edit** run `podman system connection add [--identity FILE] NAME URI` (ssh:// or absolute unix://, `~/` expanded, no `--default`; edits rename first and then replace URI/identity in place) and **Delete** runs `system connection remove`; reachability probes run `podman --connection NAME info` in background tasks (15 s cap) and feed the STATUS column, details pane and explicit-check toasts; every engine command gets `--connection NAME` |
+| SSH keys | `src/podman/ssh.rs`: key paths cached in settings, a private `ssh-agent` per connection, `ssh-add` unlock with an askpass re-execution of the binary, `SSH_AUTH_SOCK` chosen per connection (app agent, identity-only, or session fallback), watchdog and startup cleanup |
 | Settings page | Sub-navigation with Registries, Appearance (theme, refresh, log window, panel resets), Engine and About; the selected pane is persisted |
 | Builds | `podman build -f <Containerfile> (-t <tag> | --manifest <tag>) [--platform …] [--build-arg …] <context>` (manifest lists for multi-platform); context defaults to the Containerfile directory, all inputs validated, shared output panel |
 | Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `alacritty_terminal` emulator (`vte::ansi::Processor` + `Term`); pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Term::resize` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `OSC 4` palettes, `OSC 52` clipboard copies, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
@@ -1426,10 +1454,23 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     alternate screen and its inverse header render, `q` restores the shell.
     `printf '\033]52;c;aGVsbG8=\007'` then `Ctrl+Shift+V` pastes `hello`.
     `printf '\033[6 q'` draws a bar cursor.
+66. SSH key passphrases: create an encrypted key (`ssh-keygen -t ed25519 -N
+    pass -f /tmp/selkie-key`), add an SSH connection with it, and select it with
+    **Use in this app** (or restart with it selected). The **Unlock SSH key**
+    modal appears; a wrong passphrase reopens it with the error, the right one
+    toasts “Unlocked…” and STATUS stops saying `key locked`. While unlocked,
+    `ls $XDG_RUNTIME_DIR/selkie` shows one socket and
+    `SSH_AUTH_SOCK=<socket> ssh-add -l` lists exactly one key. `kill -9` the app:
+    the agent and socket disappear within a few seconds (watchdog). **Edit…**
+    prefills the Identity field from the app cache, and
+    `podman system connection list` shows no `Identity` for that connection;
+    save a plain (unencrypted) key instead and it does appear in Podman's
+    record.
 
 ## File map
 
 - `src/podman.rs` — CLI commands, JSON parsing, inspect mapping, validation
+- `src/podman/ssh.rs` — SSH key cache, per-connection agents and passphrase unlock
 - `src/terminal.rs` — PTY + `podman exec` session and `alacritty_terminal` emulator state
 - `src/desktop.rs` — single-instance lock/socket, tray icon, signal channel
 - `src/ui.rs` — entity, shared state, polling, selection, logs plumbing, actions

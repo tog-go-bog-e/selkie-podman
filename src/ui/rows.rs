@@ -120,11 +120,16 @@ impl Selkie {
         let group = SharedString::from(format!("connection-row-{ix}"));
         let in_use = self.settings.connection.as_deref() == Some(connection.name.as_str());
         let (status, status_color) = self.connection_status(&connection.name);
-        let subtitle = if connection.default {
-            format!("{} · Podman default", connection.identity_label())
+        let key = self.connection_key(connection);
+        let key_label = if key.is_empty() { "-".to_string() } else { key };
+        let mut subtitle = if connection.default {
+            format!("{key_label} · Podman default")
         } else {
-            connection.identity_label()
+            key_label.clone()
         };
+        if podman::ssh::needs_unlock(&connection.name).is_some() {
+            subtitle.push_str(" · key locked");
+        }
         let name_budget = if in_use {
             name_width - 14.0
         } else {
@@ -206,7 +211,7 @@ impl Selkie {
                             .child(truncate_sm(&connection.uri, uri_width)),
                     ),
                 )
-                .child(muted_cell(connection.identity_label(), 220.));
+                .child(muted_cell(key_label, 220.));
         }
 
         row.child(cell(status, 120.).text_color(rgb(status_color)))
@@ -1395,7 +1400,8 @@ impl Selkie {
                 theme().hover_bg,
                 cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.open_modal(Modal::edit_connection(&edit_connection), window, cx);
+                    let key = this.connection_key(&edit_connection);
+                    this.open_modal(Modal::edit_connection(&edit_connection, &key), window, cx);
                 }),
             ))
             .child(row_action_button(

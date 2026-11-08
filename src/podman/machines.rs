@@ -50,16 +50,6 @@ pub struct Connection {
     pub default: bool,
 }
 
-impl Connection {
-    pub fn identity_label(&self) -> String {
-        if self.identity.is_empty() {
-            "-".to_string()
-        } else {
-            self.identity.clone()
-        }
-    }
-}
-
 pub fn machine_action(name: &str, action: MachineAction) -> Result<String, String> {
     engine::podman_only("machines")?;
     run_local(&["machine", action.verb(), name])
@@ -270,7 +260,13 @@ pub(super) fn parse_machines(json: &str) -> Result<Vec<Machine>, String> {
 pub fn connection_list() -> Result<Vec<Connection>, String> {
     engine::podman_only("connections")?;
     let json = query_local(&["system", "connection", "list", "--format", "json"])?;
-    parse_connections(&json)
+    let connections = parse_connections(&json)?;
+    ssh::note_connections(
+        connections
+            .iter()
+            .map(|connection| (connection.name.clone(), connection.identity.clone())),
+    );
+    Ok(connections)
 }
 
 /// How long a reachability probe may take before the connection is considered
@@ -287,7 +283,7 @@ pub fn probe_connection(name: &str) -> Result<(), String> {
         return Err("connection name cannot be empty".to_string());
     }
     let mut command = Command::new("podman");
-    apply_ssh_agent(&mut command);
+    apply_ssh_agent(&mut command, Some(name));
     command.args([
         "--connection",
         name,
@@ -335,6 +331,32 @@ pub fn validate_connection_uri(value: &str) -> Result<&str, String> {
     Ok(value)
 }
 
+/// Validate the add/edit form without running anything.
+pub fn validate_connection_form(
+    name: &str,
+    uri: &str,
+    identity: Option<&str>,
+) -> Result<(), String> {
+    engine::podman_only("connections")?;
+    validate_connection_name(name)?;
+    let uri = validate_connection_uri(uri)?;
+    if let Some(identity) = identity.map(str::trim).filter(|value| !value.is_empty()) {
+        if uri.starts_with("unix://") {
+            return Err("an identity file only applies to ssh:// connections".to_string());
+        }
+        let identity = expand_home(identity);
+        if !std::path::Path::new(&identity).is_file() {
+            return Err(format!("identity file not found: {identity}"));
+        }
+    }
+    Ok(())
+}
+
+/// Expand `~` in an identity path for display and storage.
+pub fn expand_identity(value: &str) -> String {
+    expand_home(value.trim())
+}
+
 /// Build `podman system connection add` for a new connection. Connection
 /// commands are local, so the selected engine is deliberately not applied.
 pub fn connection_add_command(
@@ -360,7 +382,7 @@ pub fn connection_add_command(
 
     // For ssh:// URIs Podman dials the host while adding, so it needs the agent.
     let mut command = Command::new("podman");
-    apply_ssh_agent(&mut command);
+    apply_ssh_agent(&mut command, Some(name));
     command.args(["system", "connection", "add"]);
     if let Some(identity) = &identity {
         command.args(["--identity", identity]);

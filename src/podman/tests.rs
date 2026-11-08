@@ -722,8 +722,8 @@ fn parses_connections() {
         "ssh://core@host:2222/run/user/1000/podman/podman.sock"
     );
     assert!(connections[0].default);
-    assert_eq!(connections[0].identity_label(), "/home/me/.ssh/id_ed25519");
-    assert_eq!(connections[1].identity_label(), "-");
+    assert_eq!(connections[0].identity, "/home/me/.ssh/id_ed25519");
+    assert_eq!(connections[1].identity, "");
 }
 
 #[test]

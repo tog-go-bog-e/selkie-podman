@@ -32,6 +32,7 @@ mod machines;
 mod registry;
 mod resources;
 mod secrets;
+pub(crate) mod ssh;
 mod system;
 
 pub use crate::util::*;

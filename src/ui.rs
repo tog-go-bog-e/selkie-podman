@@ -123,10 +123,12 @@ enum DetailsTab {
 enum ConnectionCheck {
     Checking,
     Reachable,
+    /// The connection has an encrypted SSH key that has not been unlocked.
+    Locked,
     Unreachable(String),
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum Selection {
     Container(String),
     Compose(String),
@@ -634,6 +636,17 @@ impl MachineField {
     }
 }
 
+/// What to do once an SSH key passphrase has been accepted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SshUnlockTarget {
+    /// Switch the app to this connection.
+    Activate,
+    /// Re-run the reachability probe.
+    Probe,
+    /// Just unlock; the caller already did what it needed.
+    Only,
+}
+
 #[derive(Clone)]
 enum Modal {
     DeleteContainer {
@@ -679,6 +692,15 @@ enum Modal {
     },
     DeleteConnection {
         name: String,
+    },
+    /// Ask for the passphrase of an encrypted SSH identity.
+    SshPassphrase {
+        connection: String,
+        key: String,
+        input: String,
+        target: SshUnlockTarget,
+        /// Why the previous attempt failed, when retrying.
+        error: Option<String>,
     },
     BuildImage {
         form: BuildForm,
@@ -813,16 +835,16 @@ impl Modal {
         }
     }
 
-    fn create_connection() -> Self {
+    fn create_connection(last_key: &str) -> Self {
         Modal::CreateConnection {
-            form: ConnectionForm::new("", "", ""),
+            form: ConnectionForm::new("", "", last_key),
         }
     }
 
-    fn edit_connection(connection: &Connection) -> Self {
+    fn edit_connection(connection: &Connection, key: &str) -> Self {
         Modal::EditConnection {
             original: connection.name.clone(),
-            form: ConnectionForm::new(&connection.name, &connection.uri, &connection.identity),
+            form: ConnectionForm::new(&connection.name, &connection.uri, key),
         }
     }
 
@@ -1100,6 +1122,9 @@ pub struct Selkie {
 
     modal: Option<Modal>,
     modal_focus: FocusHandle,
+    /// An SSH key prompt waiting for the next frame, where a window (and thus
+    /// focus) is available: `(connection, key, target, previous error)`.
+    pending_unlock: Option<(String, String, SshUnlockTarget, Option<String>)>,
 
     dashboard: Option<Box<podman::Dashboard>>,
     dashboard_error: Option<String>,
@@ -1198,6 +1223,7 @@ impl Selkie {
             output_run: None,
             modal: None,
             modal_focus: cx.focus_handle(),
+            pending_unlock: None,
             dashboard: None,
             dashboard_error: None,
             dashboard_fetched: None,
@@ -1208,6 +1234,15 @@ impl Selkie {
         };
         view.refresh(cx);
         view.start_events(cx);
+
+        // A remembered connection with an encrypted key cannot run a single
+        // command until the key is unlocked; ask on the first frame, when the
+        // window can take focus.
+        if let Some(name) = view.settings.connection.clone() {
+            if let Some(key) = podman::ssh::needs_unlock(&name) {
+                view.pending_unlock = Some((name, key, SshUnlockTarget::Activate, None));
+            }
+        }
 
         cx.spawn(async move |this, cx| loop {
             let secs = match this.update(cx, |this, _cx| this.settings.refresh_secs.max(1)) {
@@ -1370,6 +1405,21 @@ impl Render for Selkie {
         if !self.initial_focus_done {
             self.initial_focus_done = true;
             window.focus(&self.root_focus);
+        }
+        // Focus the modal after the initial root focus, or the root would steal
+        // it from the first startup prompt.
+        if let Some((connection, key, target, error)) = self.pending_unlock.take() {
+            self.open_modal(
+                Modal::SshPassphrase {
+                    connection,
+                    key,
+                    input: String::new(),
+                    target,
+                    error,
+                },
+                window,
+                cx,
+            );
         }
 
         let mut column = div()
