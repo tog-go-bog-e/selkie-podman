@@ -3,11 +3,12 @@
 //! The PTY is allocated with `openpty`, the client (`podman exec` for a
 //! container, `podman machine ssh` for a VM) is attached to the slave side, and
 //! the master side is read on a thread and fed into a terminal emulator
-//! ([`vt100`]) that the UI renders.
+//! ([`alacritty_terminal`]) that the UI renders. Using the same emulator core as
+//! Alacritty buys true colour, OSC 4 palettes, OSC 52 clipboard access, wide and
+//! combining characters, and the kitty keyboard protocol for free.
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,21 +16,123 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::term::cell::Cell;
+use alacritty_terminal::term::{Config, RenderableContent, Term, TermMode};
+use alacritty_terminal::vte::ansi::{NamedColor, Processor, Rgb};
+
 pub const TERMINAL_ROWS: u16 = 24;
 pub const TERMINAL_COLS: u16 = 50;
 /// Lines of history kept by the emulator for scrolling back.
 pub const TERMINAL_SCROLLBACK: usize = 2000;
 
-/// Escape sequences that do not touch the grid, only the window around it.
+/// Mouse reporting requested by the running program (`DECSET 9/1000/1002/1003`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MouseMode {
+    /// No mouse reporting.
+    None,
+    /// Report clicks only.
+    Click,
+    /// Report clicks and motion while a button is held.
+    Drag,
+    /// Report all motion.
+    Motion,
+}
+
+/// Wire format for mouse reports.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MouseEncoding {
+    /// The legacy `ESC [ M` encoding.
+    Default,
+    /// The UTF-8 flavour of the legacy encoding.
+    Utf8,
+    /// The extended SGR encoding.
+    Sgr,
+}
+
+/// Grid dimensions handed to the emulator.
+#[derive(Clone, Copy)]
+struct GridSize {
+    rows: usize,
+    cols: usize,
+}
+
+impl GridSize {
+    fn new(rows: u16, cols: u16) -> Self {
+        Self {
+            rows: rows.max(2) as usize,
+            cols: cols.max(20) as usize,
+        }
+    }
+}
+
+impl Dimensions for GridSize {
+    fn total_lines(&self) -> usize {
+        self.rows
+    }
+
+    fn screen_lines(&self) -> usize {
+        self.rows
+    }
+
+    fn columns(&self) -> usize {
+        self.cols
+    }
+}
+
+/// The emulator's side channel: everything the escape parser reports that is
+/// not a change to the grid.
 #[derive(Clone, Default)]
 struct TerminalEvents {
     title: Arc<Mutex<Option<String>>>,
+    /// Text copied with OSC 52, waiting for the UI thread to put it on the
+    /// system clipboard.
+    clipboard: Arc<Mutex<Vec<String>>>,
+    /// Answers the emulator sends back to the running program (device
+    /// attributes, colour queries, …) go through the normal input writer.
+    writer: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
 }
 
-impl vt100::Callbacks for TerminalEvents {
-    fn set_window_title(&mut self, _screen: &mut vt100::Screen, title: &[u8]) {
-        if let Ok(mut current) = self.title.lock() {
-            *current = Some(String::from_utf8_lossy(title).into_owned());
+impl TerminalEvents {
+    fn write(&self, bytes: Vec<u8>) {
+        if let Ok(writer) = self.writer.lock() {
+            if let Some(writer) = writer.as_ref() {
+                let _ = writer.send(bytes);
+            }
+        }
+    }
+}
+
+impl EventListener for TerminalEvents {
+    fn send_event(&self, event: Event) {
+        match event {
+            Event::Title(title) => {
+                if let Ok(mut current) = self.title.lock() {
+                    *current = Some(title);
+                }
+            }
+            Event::ResetTitle => {
+                if let Ok(mut current) = self.title.lock() {
+                    *current = None;
+                }
+            }
+            // Replies to queries such as device attributes or cursor position.
+            Event::PtyWrite(text) => self.write(text.into_bytes()),
+            Event::ClipboardStore(_, text) => {
+                if let Ok(mut pending) = self.clipboard.lock() {
+                    pending.push(text);
+                }
+            }
+            // OSC 52 loads would need the system clipboard, which only the UI
+            // thread can read. Reply with an empty selection so a program that
+            // waits for an answer does not stall.
+            Event::ClipboardLoad(_, format) => self.write(format("").into_bytes()),
+            Event::ColorRequest(index, format) => {
+                self.write(format(color_request(index)).into_bytes());
+            }
+            _ => {}
         }
     }
 }
@@ -43,8 +146,9 @@ pub struct TerminalSession {
     writer: Option<mpsc::Sender<Vec<u8>>>,
     stop: Arc<AtomicBool>,
     child: Option<Child>,
-    parser: vt100::Parser<TerminalEvents>,
-    title: Arc<Mutex<Option<String>>>,
+    term: Term<TerminalEvents>,
+    parser: Processor,
+    events: TerminalEvents,
     rows: u16,
     cols: u16,
     receiver: Receiver<Vec<u8>>,
@@ -204,9 +308,10 @@ impl TerminalSession {
 
         let stop = Arc::new(AtomicBool::new(false));
         let reader_stop = Arc::clone(&stop);
-        let title = Arc::new(Mutex::new(None));
-        let callbacks = TerminalEvents {
-            title: Arc::clone(&title),
+        let events = TerminalEvents {
+            title: Arc::new(Mutex::new(None)),
+            clipboard: Arc::new(Mutex::new(Vec::new())),
+            writer: Arc::new(Mutex::new(Some(writer.clone()))),
         };
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
@@ -251,18 +356,20 @@ impl TerminalSession {
             })
             .ok();
 
+        let config = Config {
+            scrolling_history: TERMINAL_SCROLLBACK,
+            ..Config::default()
+        };
+        let term = Term::new(config, &GridSize::new(rows, cols), events.clone());
+
         Ok(Self {
             master: Some(master),
             writer: Some(writer),
             stop,
             child: Some(child),
-            parser: vt100::Parser::new_with_callbacks(
-                NonZeroU16::new(rows).unwrap_or(NonZeroU16::MIN),
-                NonZeroU16::new(cols).unwrap_or(NonZeroU16::MIN),
-                TERMINAL_SCROLLBACK,
-                callbacks,
-            ),
-            title,
+            term,
+            parser: Processor::new(),
+            events,
             rows,
             cols,
             receiver,
@@ -271,8 +378,23 @@ impl TerminalSession {
         })
     }
 
-    pub fn screen(&self) -> &vt100::Screen {
-        self.parser.screen()
+    /// Emulator content for the current viewport.
+    pub fn renderable(&self) -> RenderableContent<'_> {
+        self.term.renderable_content()
+    }
+
+    /// The cell at a viewport coordinate, regardless of scrollback.
+    pub fn cell(&self, row: u16, col: u16) -> Option<&Cell> {
+        let offset = self.term.grid().display_offset() as i32;
+        // Scrolling back moves the viewport into the history, whose lines are
+        // negative. `row` is always relative to the top of the viewport.
+        let top = -offset;
+        let bottom = top + self.term.screen_lines() as i32 - 1;
+        let line = top + row as i32;
+        if line > bottom || col as usize >= self.term.columns() {
+            return None;
+        }
+        Some(&self.term.grid()[Line(line)][Column(col as usize)])
     }
 
     /// Current grid size as `(rows, cols)`.
@@ -292,10 +414,7 @@ impl TerminalSession {
         }
         self.rows = rows;
         self.cols = cols;
-        self.parser.set_size(
-            NonZeroU16::new(rows).unwrap_or(NonZeroU16::MIN),
-            NonZeroU16::new(cols).unwrap_or(NonZeroU16::MIN),
-        );
+        self.term.resize(GridSize::new(rows, cols));
 
         if let Some(master) = &self.master {
             let winsize = libc::winsize {
@@ -314,70 +433,103 @@ impl TerminalSession {
 
     /// Rows scrolled back from the live view (0 = at the bottom).
     pub fn scrollback(&self) -> usize {
-        self.parser.screen().scrollback()
+        self.term.grid().display_offset()
     }
 
     /// Scroll by `delta` lines (positive scrolls back); clamped to the buffer.
     pub fn scroll_by(&mut self, delta: isize) -> bool {
-        let current = self.parser.screen().scrollback() as isize;
-        let max = self.parser.screen().scrollback_len() as isize;
+        let current = self.scrollback() as isize;
+        let max = self.term.history_size() as isize;
         let target = (current + delta).clamp(0, max);
         if target == current {
             return false;
         }
-        self.parser.screen_mut().set_scrollback(target as usize);
+        self.term
+            .scroll_display(Scroll::Delta((target - current) as i32));
         true
     }
 
     /// Return to the live viewport.
     pub fn scroll_to_bottom(&mut self) {
         if self.scrollback() != 0 {
-            self.parser.screen_mut().set_scrollback(0);
+            self.term.scroll_display(Scroll::Bottom);
         }
     }
 
     /// Whether the shell requested application cursor keys (`DECCKM`).
     pub fn application_cursor(&self) -> bool {
-        self.parser.screen().application_cursor()
+        self.term.mode().contains(TermMode::APP_CURSOR)
     }
 
     /// Whether the shell asked for pastes to be bracketed (`DECSET 2004`).
     pub fn bracketed_paste(&self) -> bool {
-        self.parser.screen().bracketed_paste()
+        self.term.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
-    /// Mouse reporting mode requested by the running program (`DECSET 9/1000/1002/1003`).
-    pub fn mouse_mode(&self) -> vt100::MouseProtocolMode {
-        self.parser.screen().mouse_protocol_mode()
+    /// Mouse reporting mode requested by the running program.
+    pub fn mouse_mode(&self) -> MouseMode {
+        let mode = self.term.mode();
+        if mode.contains(TermMode::MOUSE_MOTION) {
+            MouseMode::Motion
+        } else if mode.contains(TermMode::MOUSE_DRAG) {
+            MouseMode::Drag
+        } else if mode.contains(TermMode::MOUSE_REPORT_CLICK) {
+            MouseMode::Click
+        } else {
+            MouseMode::None
+        }
     }
 
     /// Wire format for mouse reports (`SGR` or the legacy encodings).
-    pub fn mouse_encoding(&self) -> vt100::MouseProtocolEncoding {
-        self.parser.screen().mouse_protocol_encoding()
+    pub fn mouse_encoding(&self) -> MouseEncoding {
+        let mode = self.term.mode();
+        if mode.contains(TermMode::SGR_MOUSE) {
+            MouseEncoding::Sgr
+        } else if mode.contains(TermMode::UTF8_MOUSE) {
+            MouseEncoding::Utf8
+        } else {
+            MouseEncoding::Default
+        }
     }
 
-    /// Cursor shape requested with `DECSCUSR`.
-    pub fn cursor_style(&self) -> vt100::CursorStyle {
-        self.parser.screen().cursor_style()
-    }
-
-    /// Whether the requested cursor shape blinks.
+    /// Whether the requested cursor shape blinks (`DECSCUSR`/`DECSET 12`).
     pub fn cursor_blinks(&self) -> bool {
-        matches!(
-            self.cursor_style(),
-            vt100::CursorStyle::BlinkBlock
-                | vt100::CursorStyle::BlinkUnderline
-                | vt100::CursorStyle::BlinkVerticalBar
-        )
+        self.term.cursor_style().blinking
     }
 
     /// Window title set through `OSC 0`/`OSC 2`, if any.
     pub fn title(&self) -> Option<String> {
-        self.title
+        self.events
+            .title
             .lock()
             .ok()
             .and_then(|title| title.clone())
             .filter(|title| !title.trim().is_empty())
+    }
+
+    /// Text copied by the running program with OSC 52, if any. The clipboard
+    /// belongs to the window, so the UI thread applies this.
+    pub fn take_clipboard(&self) -> Option<String> {
+        let mut pending = self.events.clipboard.lock().ok()?;
+        let text = pending.pop()?;
+        pending.clear();
+        Some(text)
+    }
+
+    /// The whole viewport as text, one trimmed line per row. Used by tests.
+    #[cfg(test)]
+    pub fn contents(&self) -> String {
+        let start = Point::new(Line(0), Column(0));
+        let end = Point::new(
+            Line(self.term.screen_lines() as i32 - 1),
+            self.term.last_column(),
+        );
+        self.term.bounds_to_string(start, end)
+    }
+
+    /// Text in an inclusive viewport cell range, with trailing blanks removed.
+    pub fn text_between(&self, start: (u16, u16), end: (u16, u16)) -> String {
+        text_between(&self.term, start, end)
     }
 
     pub fn write(&self, bytes: &[u8]) {
@@ -392,7 +544,7 @@ impl TerminalSession {
         loop {
             match self.receiver.try_recv() {
                 Ok(bytes) => {
-                    self.parser.process(&bytes);
+                    self.parser.advance(&mut self.term, &bytes);
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -443,6 +595,54 @@ impl Drop for TerminalSession {
     }
 }
 
+/// Text in an inclusive cell range, with trailing blanks removed per line.
+fn text_between<T: EventListener>(term: &Term<T>, start: (u16, u16), end: (u16, u16)) -> String {
+    let offset = term.grid().display_offset() as i32;
+    let point =
+        |(row, col): (u16, u16)| Point::new(Line(row as i32 - offset), Column(col as usize));
+    term.bounds_to_string(point(start), point(end))
+}
+
+/// The colour the emulator reports for an OSC 4/10/11 query.
+fn color_request(index: usize) -> Rgb {
+    let (r, g, b) = match index {
+        0..=255 => {
+            let rgb = ansi_color(index as u8);
+            (
+                ((rgb >> 16) & 0xff) as u8,
+                ((rgb >> 8) & 0xff) as u8,
+                (rgb & 0xff) as u8,
+            )
+        }
+        index if index == NamedColor::Background as usize => (0x1e, 0x1e, 0x1e),
+        _ => (0xe5, 0xe5, 0xe5),
+    };
+    Rgb { r, g, b }
+}
+
+/// One entry of the xterm-256 palette as `0xRRGGBB`.
+pub fn ansi_color(index: u8) -> u32 {
+    const BASIC: [u32; 16] = [
+        0x1e1e1e, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666,
+        0xf14c4c, 0x23d18b, 0xf5f543, 0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff,
+    ];
+    match index {
+        0..=15 => BASIC[index as usize],
+        16..=231 => {
+            const STEPS: [u32; 6] = [0, 95, 135, 175, 215, 255];
+            let index = index - 16;
+            let red = STEPS[(index / 36) as usize];
+            let green = STEPS[((index % 36) / 6) as usize];
+            let blue = STEPS[(index % 6) as usize];
+            (red << 16) | (green << 8) | blue
+        }
+        _ => {
+            let level = 8 + 10 * (index - 232) as u32;
+            (level << 16) | (level << 8) | level
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,7 +673,7 @@ mod tests {
     #[test]
     fn client_does_not_inherit_the_master() {
         let session = run_to_close("ls -l /proc/$$/fd");
-        let text = session.screen().contents();
+        let text = session.contents();
         assert!(text.contains("/dev/pts/"), "listing missing: {text}");
         assert!(
             !text.contains("ptmx"),
@@ -484,7 +684,7 @@ mod tests {
     #[test]
     fn keeps_final_output_and_exit_code() {
         let session = run_to_close("printf 'last words'; exit 127");
-        assert!(session.screen().contents().contains("last words"));
+        assert!(session.contents().contains("last words"));
         assert_eq!(session.exit_code, Some(127));
     }
 
@@ -503,9 +703,40 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
-            session.screen().contents().contains("200000"),
+            session.contents().contains("200000"),
             "{}",
-            session.screen().contents()
+            session.contents()
         );
+    }
+
+    /// Build an emulator without a process, for parser-level tests.
+    fn mock_term(content: &str) -> Term<TerminalEvents> {
+        let size = GridSize::new(4, 20);
+        let mut term = Term::new(Config::default(), &size, TerminalEvents::default());
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, content.as_bytes());
+        term
+    }
+
+    #[test]
+    fn selection_text_trims_trailing_blanks() {
+        let term = mock_term("hello world\r\nsecond line\r\n");
+        assert_eq!(text_between(&term, (0, 0), (0, 4)), "hello");
+        assert_eq!(text_between(&term, (0, 6), (1, 5)), "world\nsecond");
+    }
+
+    #[test]
+    fn records_the_window_title() {
+        let session = run_to_close("printf '\\033]2;selkie\\007'");
+        assert_eq!(session.title().as_deref(), Some("selkie"));
+    }
+
+    #[test]
+    fn maps_ansi_colors() {
+        assert_eq!(ansi_color(0), 0x1e1e1e);
+        assert_eq!(ansi_color(7), 0xe5e5e5);
+        assert_eq!(ansi_color(16), 0x000000);
+        assert_eq!(ansi_color(21), 0x0000ff);
+        assert_eq!(ansi_color(255), 0xeeeeee);
     }
 }

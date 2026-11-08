@@ -197,7 +197,8 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 - [x] Terminal tab in the container details pane: PTY allocated with `openpty`,
       `podman exec -it -e TERM=xterm-256color <id> /bin/sh` attached to the slave,
       fixed 50×24 grid
-- [x] `vt100` terminal emulation rendered as style-grouped monospace runs with
+- [x] Terminal emulation (initially `vt100`, replaced by `alacritty_terminal` in
+      the section below) rendered as style-grouped monospace runs with
       ANSI/256/truecolor support, bold/inverse, cursor block and dark/light theme
       defaults
 - [x] Input: printable characters, Enter/Tab/Backspace/Escape, arrows,
@@ -599,6 +600,26 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 - [x] Clicking the terminal header (`Live`/`Restart`) returns focus to the grid, so
       typing keeps working afterwards
 
+### Done (terminal: alacritty_terminal)
+
+- [x] Replaced the `vt100` screen model with `alacritty_terminal` 0.26, the
+      emulator core from Alacritty; the PTY plumbing (`openpty`, reader/writer
+      threads, `PR_SET_PDEATHSIG`, `TIOCSWINSZ`) is unchanged
+- [x] Rendering reads the emulator's grid: 16/256/true-color cells, palette
+      entries redefined with `OSC 4`, bold/italic/underline/dim/inverse, wide
+      (CJK) and combining characters, and zero-width extras (emoji joiners)
+- [x] Clipboard: `OSC 52` copies are queued by the emulator's event proxy and
+      written to the system clipboard on the UI thread, so `Ctrl+Shift+V` can
+      paste what a program copied; `OSC 52` loads are answered empty
+- [x] The event proxy also answers `PtyWrite` (device attributes, cursor-position
+      and colour queries) and keeps `OSC 0/2` titles in the pane header
+- [x] Scrollback rendering fixed for history lines: `cell()` maps viewport rows
+      to the negative grid lines of the display offset (verified with
+      `seq 1 200`, wheel-up and **Live**)
+- [x] Live verification: bold/underline/true-color text, `日本語 😀` alignment,
+      `top` on the alternate screen, `OSC 52` copy followed by `Ctrl+Shift+V`,
+      and `DECSCUSR` steady-bar cursor
+
 ### Current architecture
 
 | Concern | Implementation |
@@ -628,7 +649,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Connections | `podman system connection list` read locally; **Add**/**Edit** run `podman system connection add [--identity FILE] NAME URI` (ssh:// or absolute unix://, `~/` expanded, no `--default`; edits rename first and then replace URI/identity in place) and **Delete** runs `system connection remove`; reachability probes run `podman --connection NAME info` in background tasks (15 s cap) and feed the STATUS column, details pane and explicit-check toasts; every engine command gets `--connection NAME` |
 | Settings page | Sub-navigation with Registries, Appearance (theme, refresh, log window, panel resets), Engine and About; the selected pane is persisted |
 | Builds | `podman build -f <Containerfile> (-t <tag> | --manifest <tag>) [--platform …] [--build-arg …] <context>` (manifest lists for multi-platform); context defaults to the Containerfile directory, all inputs validated, shared output panel |
-| Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `vt100` emulator; pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Parser::set_size` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
+| Terminal | `openpty` + `podman exec -it` (containers) or `podman machine ssh` (VMs) + `alacritty_terminal` emulator (`vte::ansi::Processor` + `Term`); pane measured per frame, column count derived from the chosen monospace font's real advance (`TextSystem::advance`) → `Term::resize` + `TIOCSWINSZ`, 2000-line scrollback, SS3 cursor keys in DECCKM mode, `OSC 0/2` titles, `OSC 4` palettes, `OSC 52` clipboard copies, `DECSCUSR` cursor shapes, mouse-drag/word/line selection with copy and bracketed paste, mouse reporting in SGR/legacy/UTF-8 encodings |
 | Stats | Podman CLI `stats --no-stream`, or `/stats?stream=false` for the API engines, polled every 2 s while the Stats tab is open; 120 in-memory samples rendered as bar sparklines |
 | Dashboard | Counts from the snapshot; `podman info` + `podman system df` or Docker `info` + `system df` fetched only while the tab is visible and cached for 30 s (info probes the store and takes seconds) |
 | Packaging | `packaging/` holds the SVG/PNG icons, desktop entry, `install.sh` (user-level, `DESTDIR`-capable, `--uninstall`) and `build-release.sh` (versioned tarball + sha256); `app_id` sets `WM_CLASS`, and the app writes `_NET_WM_ICON` itself (16–128 px, drawn at runtime) |
@@ -894,7 +915,9 @@ i18n. See "Non-goals" above.
   Podman's context transfer. Build and compose actions share one runner, so only
   one can run at a time.
 - The terminal captures app shortcuts while focused, always runs `/bin/sh`, and
-  hyperlinks (`OSC 8`) are unavailable because `vt100` does not expose them.
+  parsed `OSC 8` hyperlinks are drawn as plain text (no clickable links;
+  per-cell underline colours use the text colour) because the grid renderer only
+  deals in text runs. The kitty keyboard protocol is not negotiated.
   Closing the PTY is what stops the shell; killing `podman exec` directly can
   leave a stale conmon, so the shutdown path closes the master first. The exec
   client also carries `PR_SET_PDEATHSIG=SIGTERM` so it cannot outlive a hard
@@ -1394,11 +1417,20 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     the status bar names the API engine. Stop the service to see the connection
     error, then switch back to Podman: the CLI data and the Podman-only views
     return.
+64. Terminal emulator (`alacritty_terminal`): run
+    `printf '\033[1;31mR\033[0m \033[38;2;0;200;120mT\033[0m'` and
+    `printf '\033[4mU\033[0m \346\227\245\346\234\254\350\252\236 \360\237\230\200\n'`
+    — bold red, true-colour green, underlined, CJK and emoji glyphs align on the
+    grid. Run `seq 1 200`, wheel up over the grid: the history renders (no blank
+    pane) with `N lines back`, **Live** returns to the prompt. Run `top`: the
+    alternate screen and its inverse header render, `q` restores the shell.
+    `printf '\033]52;c;aGVsbG8=\007'` then `Ctrl+Shift+V` pastes `hello`.
+    `printf '\033[6 q'` draws a bar cursor.
 
 ## File map
 
 - `src/podman.rs` — CLI commands, JSON parsing, inspect mapping, validation
-- `src/terminal.rs` — PTY + `podman exec` session and `vt100` emulator state
+- `src/terminal.rs` — PTY + `podman exec` session and `alacritty_terminal` emulator state
 - `src/desktop.rs` — single-instance lock/socket, tray icon, signal channel
 - `src/ui.rs` — entity, shared state, polling, selection, logs plumbing, actions
 - `src/ui/sidebar.rs` — navigation, engine status, Accounts/Settings entries

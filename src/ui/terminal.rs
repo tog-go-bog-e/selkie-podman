@@ -5,9 +5,17 @@ use gpui::{
     Point, SharedString,
 };
 
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::color::Colors;
+use alacritty_terminal::vte::ansi::{
+    Color as AnsiColor, CursorShape as TermCursorShape, NamedColor, Rgb,
+};
+
 use super::helpers::*;
 use super::*;
-use crate::terminal::{TerminalSession, TERMINAL_COLS, TERMINAL_ROWS};
+use crate::terminal::{
+    ansi_color, MouseEncoding, MouseMode, TerminalSession, TERMINAL_COLS, TERMINAL_ROWS,
+};
 
 /// Exit code of `podman exec` when the requested executable does not exist.
 const NO_SHELL_EXIT: i32 = 127;
@@ -164,6 +172,13 @@ impl Selkie {
                         Some(session) => {
                             let was_closed = session.closed;
                             let changed = session.drain();
+                            // OSC 52 copies have to reach the system clipboard
+                            // through the window, which only the UI thread can do.
+                            if let Some(text) = session.take_clipboard() {
+                                if !text.is_empty() {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                }
+                            }
                             let just_closed = !was_closed && session.closed;
                             if changed || just_closed {
                                 cx.notify();
@@ -364,28 +379,35 @@ impl Selkie {
         let metrics = self.terminal_metrics(cx.text_system());
         let family = metrics.family.clone();
         let char_width = metrics.char_width;
-        let screen = session.screen();
-        let (rows, cols) = screen.size();
-        let (rows, cols) = (rows.get(), cols.get());
-        let (cursor_row, cursor_col) = screen.cursor_position();
+        let content = session.renderable();
+        let (rows, cols) = session.size();
 
         // Programs choose the cursor shape with DECSCUSR; the default is a
-        // steady block.
-        let (cursor_shape, blinking) = match session.cursor_style() {
-            vt100::CursorStyle::BlinkBlock => (CursorShape::Block, true),
-            vt100::CursorStyle::SteadyBlock => (CursorShape::Block, false),
-            vt100::CursorStyle::BlinkUnderline => (CursorShape::Underline, true),
-            vt100::CursorStyle::SteadyUnderline => (CursorShape::Underline, false),
-            vt100::CursorStyle::BlinkVerticalBar => (CursorShape::Bar, true),
-            vt100::CursorStyle::SteadyVerticalBar => (CursorShape::Bar, false),
-            vt100::CursorStyle::Default => (CursorShape::Block, false),
+        // steady block. The emulator reports a hidden shape when the program
+        // asked for that (or when VI mode is idle).
+        let (cursor_shape, hidden) = match content.cursor.shape {
+            TermCursorShape::Block | TermCursorShape::HollowBlock => (CursorShape::Block, false),
+            TermCursorShape::Underline => (CursorShape::Underline, false),
+            TermCursorShape::Beam => (CursorShape::Bar, false),
+            TermCursorShape::Hidden => (CursorShape::Block, true),
         };
+        let cursor_row = content
+            .cursor
+            .point
+            .line
+            .0
+            .clamp(0, rows.saturating_sub(1) as i32) as u16;
+        let cursor_col = content
+            .cursor
+            .point
+            .column
+            .0
+            .min(cols.saturating_sub(1) as usize) as u16;
         // The cursor belongs to the live viewport, and blinking shapes follow
         // the same 2 Hz tick as the text carets.
-        let show_cursor = !screen.hide_cursor()
-            && !session.closed
-            && screen.scrollback() == 0
-            && (!blinking || self.caret_on);
+        let blinking = session.cursor_blinks();
+        let show_cursor =
+            !hidden && !session.closed && session.scrollback() == 0 && (!blinking || self.caret_on);
 
         let selection = self
             .terminal_selection
@@ -405,19 +427,21 @@ impl Selkie {
             let mut style: Option<CellStyle> = None;
 
             for col in 0..cols {
-                let Some(cell) = screen.cell(row, col) else {
+                let Some(cell) = session.cell(row, col) else {
                     continue;
                 };
-                if cell.is_wide_continuation() {
+                // The wide character already covers two columns; its spacer is
+                // not drawn.
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
                     continue;
                 }
 
-                let mut fg = terminal_color(cell.fgcolor(), theme().text);
-                let mut bg = terminal_color(cell.bgcolor(), theme().bg);
-                if cell.inverse() {
+                let mut fg = terminal_color(cell.fg, content.colors, theme().text);
+                let mut bg = terminal_color(cell.bg, content.colors, theme().bg);
+                if cell.flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
-                if cell.dim() {
+                if cell.flags.contains(Flags::DIM) {
                     fg = blend(fg, bg, 0.45);
                 }
 
@@ -433,9 +457,9 @@ impl Selkie {
                 let cell_style = CellStyle {
                     fg,
                     bg,
-                    bold: cell.bold(),
-                    italic: cell.italic(),
-                    underline: cell.underline(),
+                    bold: cell.flags.contains(Flags::BOLD),
+                    italic: cell.flags.contains(Flags::ITALIC),
+                    underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
                 };
                 if style != Some(cell_style) {
                     if let Some(previous) = style {
@@ -445,14 +469,18 @@ impl Selkie {
                     style = Some(cell_style);
                 }
 
-                let contents = cell.contents();
                 // A plain space collapses to zero width, so a coloured or
                 // reversed background would never paint; use a non-breaking
                 // space wherever the cell's background is not the default.
-                if contents.trim().is_empty() && bg != theme().bg {
+                if cell.flags.contains(Flags::HIDDEN) {
+                    text.push(if bg != theme().bg { '\u{00A0}' } else { ' ' });
+                } else if cell.c == ' ' && bg != theme().bg {
                     text.push('\u{00A0}');
                 } else {
-                    text.push_str(contents);
+                    text.push(cell.c);
+                    if let Some(zerowidth) = cell.zerowidth() {
+                        text.extend(zerowidth.iter().copied());
+                    }
                 }
             }
 
@@ -553,7 +581,7 @@ impl Selkie {
         let Some(session) = self.terminal.as_ref() else {
             return;
         };
-        if session.mouse_mode() != vt100::MouseProtocolMode::None {
+        if session.mouse_mode() != MouseMode::None {
             // One report per event: X11 delivers exactly one event per notch, and
             // the program's own bindings decide how far to scroll.
             let cell = self
@@ -607,7 +635,7 @@ impl Selkie {
             return;
         };
 
-        if session.mouse_mode() != vt100::MouseProtocolMode::None {
+        if session.mouse_mode() != MouseMode::None {
             let bytes = encode_mouse(
                 session.mouse_encoding(),
                 MouseAction::Press,
@@ -654,7 +682,7 @@ impl Selkie {
         let Some(session) = self.terminal.as_ref() else {
             return;
         };
-        if session.mouse_mode() == vt100::MouseProtocolMode::None {
+        if session.mouse_mode() == MouseMode::None {
             // A click that did not turn into a drag leaves no selection.
             if let Some((anchor, active)) = self.terminal_selection {
                 if anchor == active {
@@ -690,10 +718,10 @@ impl Selkie {
         };
         let mode = session.mouse_mode();
 
-        if mode != vt100::MouseProtocolMode::None {
+        if mode != MouseMode::None {
             let motion = match mode {
-                vt100::MouseProtocolMode::AnyMotion => true,
-                vt100::MouseProtocolMode::ButtonMotion => event.pressed_button.is_some(),
+                MouseMode::Motion => true,
+                MouseMode::Drag => event.pressed_button.is_some(),
                 _ => false,
             };
             if motion {
@@ -753,12 +781,11 @@ impl Selkie {
         let Some(session) = self.terminal.as_ref() else {
             return (cell, cell);
         };
-        let screen = session.screen();
         let cols = session.size().1;
         let is_word = |col: u16| {
-            screen
-                .cell(cell.row, col)
-                .is_some_and(|cell| !cell.contents().trim().is_empty())
+            session.cell(cell.row, col).is_some_and(|cell| {
+                !cell.c.is_whitespace() && !cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+            })
         };
         if !is_word(cell.col) {
             return (cell, cell);
@@ -793,7 +820,7 @@ impl Selkie {
             return false;
         };
         let (start, end) = terminal_selection_range(anchor, active);
-        let text = selection_text(session.screen(), start, end);
+        let text = session.text_between((start.row, start.col), (end.row, end.col));
         if text.is_empty() {
             return false;
         }
@@ -953,7 +980,7 @@ enum MouseAction {
 
 /// Encode a mouse report in the wire format the program asked for.
 fn encode_mouse(
-    encoding: vt100::MouseProtocolEncoding,
+    encoding: MouseEncoding,
     action: MouseAction,
     button: TermMouseButton,
     col: u16,
@@ -978,12 +1005,12 @@ fn encode_mouse(
         MouseAction::Motion => base + 32 + modifiers,
         // SGR keeps the button on release and marks it with `m` instead; the
         // legacy encodings report button 3.
-        MouseAction::Release if encoding == vt100::MouseProtocolEncoding::Sgr => base + modifiers,
+        MouseAction::Release if encoding == MouseEncoding::Sgr => base + modifiers,
         MouseAction::Release => 3 + modifiers,
         MouseAction::Press => base + modifiers,
     };
 
-    if encoding == vt100::MouseProtocolEncoding::Sgr {
+    if encoding == MouseEncoding::Sgr {
         let terminator = if action == MouseAction::Release {
             'm'
         } else {
@@ -996,7 +1023,7 @@ fn encode_mouse(
     // the 223-coordinate limit by sending code points instead.
     let mut bytes = vec![0x1b, b'[', b'M'];
     for value in [code, u32::from(col) + 1, u32::from(row) + 1] {
-        let value = if encoding == vt100::MouseProtocolEncoding::Utf8 {
+        let value = if encoding == MouseEncoding::Utf8 {
             32 + value
         } else {
             32 + value.min(223)
@@ -1025,18 +1052,6 @@ fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
-/// Text in an inclusive cell range, with trailing blanks removed per line.
-fn selection_text(screen: &vt100::Screen, start: TermPos, end: TermPos) -> String {
-    let cols = screen.size().1.get();
-    let end_col = end.col.saturating_add(1).min(cols);
-    screen
-        .contents_between(start.row, start.col, end.row, end_col)
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn terminal_run(text: &str, style: CellStyle, family: &SharedString) -> Div {
     div()
         .flex_shrink_0()
@@ -1051,36 +1066,42 @@ fn terminal_run(text: &str, style: CellStyle, family: &SharedString) -> Div {
         .child(text.to_string())
 }
 
-fn terminal_color(color: vt100::Color, default: u32) -> u32 {
+fn terminal_color(color: AnsiColor, colors: &Colors, default: u32) -> u32 {
     match color {
-        vt100::Color::Default => default,
-        vt100::Color::Idx(index) => ansi_color(index),
-        vt100::Color::Rgb(red, green, blue) => {
-            ((red as u32) << 16) | ((green as u32) << 8) | blue as u32
+        AnsiColor::Named(named) => named_color(named, colors, default),
+        AnsiColor::Indexed(index) => {
+            colors[usize::from(index)].map_or_else(|| ansi_color(index), rgb_value)
         }
+        AnsiColor::Spec(rgb) => rgb_value(rgb),
     }
 }
 
-fn ansi_color(index: u8) -> u32 {
-    const BASIC: [u32; 16] = [
-        0x1e1e1e, 0xcd3131, 0x0dbc79, 0xe5e510, 0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5, 0x666666,
-        0xf14c4c, 0x23d18b, 0xf5f543, 0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff,
-    ];
-    match index {
-        0..=15 => BASIC[index as usize],
-        16..=231 => {
-            const STEPS: [u32; 6] = [0, 95, 135, 175, 215, 255];
-            let index = index - 16;
-            let red = STEPS[(index / 36) as usize];
-            let green = STEPS[((index % 36) / 6) as usize];
-            let blue = STEPS[(index % 6) as usize];
-            (red << 16) | (green << 8) | blue
-        }
-        _ => {
-            let level = 8 + 10 * (index - 232) as u32;
-            (level << 16) | (level << 8) | level
-        }
+/// Resolve an ANSI named colour against the palette (which OSC 4 can redefine)
+/// and, for the default foreground/background, the app theme.
+fn named_color(named: NamedColor, colors: &Colors, default: u32) -> u32 {
+    if let Some(rgb) = colors[named] {
+        return rgb_value(rgb);
     }
+    match named {
+        NamedColor::Foreground | NamedColor::BrightForeground => theme().text,
+        NamedColor::Background => theme().bg,
+        NamedColor::Cursor => default,
+        NamedColor::DimForeground => blend(theme().text, theme().bg, 0.45),
+        NamedColor::DimBlack => ansi_color(0),
+        NamedColor::DimRed => ansi_color(1),
+        NamedColor::DimGreen => ansi_color(2),
+        NamedColor::DimYellow => ansi_color(3),
+        NamedColor::DimBlue => ansi_color(4),
+        NamedColor::DimMagenta => ansi_color(5),
+        NamedColor::DimCyan => ansi_color(6),
+        NamedColor::DimWhite => ansi_color(7),
+        // Black through BrightWhite occupy the first sixteen indices.
+        other => ansi_color(other as u8),
+    }
+}
+
+fn rgb_value(rgb: Rgb) -> u32 {
+    ((rgb.r as u32) << 16) | ((rgb.g as u32) << 8) | rgb.b as u32
 }
 
 /// Translate a GPUI keystroke into bytes for the PTY.
@@ -1244,7 +1265,7 @@ mod tests {
     #[test]
     fn encodes_sgr_mouse_reports() {
         let none = Modifiers::default();
-        let sgr = vt100::MouseProtocolEncoding::Sgr;
+        let sgr = MouseEncoding::Sgr;
         assert_eq!(
             encode_mouse(sgr, MouseAction::Press, TermMouseButton::Left, 0, 0, none),
             b"\x1b[<0;1;1M".to_vec()
@@ -1289,7 +1310,7 @@ mod tests {
     #[test]
     fn encodes_legacy_mouse_reports() {
         let none = Modifiers::default();
-        let legacy = vt100::MouseProtocolEncoding::Default;
+        let legacy = MouseEncoding::Default;
         assert_eq!(
             encode_mouse(
                 legacy,
@@ -1315,7 +1336,7 @@ mod tests {
         );
         // The UTF-8 encoding keeps working past the 223 column limit.
         let report = encode_mouse(
-            vt100::MouseProtocolEncoding::Utf8,
+            MouseEncoding::Utf8,
             MouseAction::Press,
             TermMouseButton::Left,
             300,
@@ -1365,30 +1386,6 @@ mod tests {
         assert!(contains((start, end), 3, 2));
         assert!(!contains((start, end), 3, 3));
         assert!(!contains((start, end), 4, 0));
-    }
-
-    #[test]
-    fn selection_text_trims_trailing_blanks() {
-        let mut parser = vt100::Parser::new(
-            std::num::NonZeroU16::new(4).unwrap(),
-            std::num::NonZeroU16::new(20).unwrap(),
-            0,
-        );
-        parser.process(b"hello world\r\nsecond line\r\n");
-
-        let line = selection_text(
-            parser.screen(),
-            TermPos { row: 0, col: 0 },
-            TermPos { row: 0, col: 4 },
-        );
-        assert_eq!(line, "hello");
-
-        let lines = selection_text(
-            parser.screen(),
-            TermPos { row: 0, col: 6 },
-            TermPos { row: 1, col: 5 },
-        );
-        assert_eq!(lines, "world\nsecond");
     }
 
     #[test]

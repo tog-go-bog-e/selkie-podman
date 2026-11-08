@@ -22,7 +22,9 @@ ksni = { version = "0.3.7", default-features = false, features = [
     "blocking",
     "async-io",
 ] }
-vt100 = "0.18"
+# The Alacritty emulator core: true colour, OSC 4/52, wide characters and the
+# alternate screen without writing a VT parser by hand.
+alacritty_terminal = "0.26"
 # Sets `_NET_WM_ICON` on the main window (GPUI has no icon API). Already in the
 # tree through gpui, so this adds no new build work.
 x11rb = "0.13"

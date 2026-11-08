@@ -39,8 +39,10 @@ engine**.
   pause / resume / rename / delete, streaming logs (configurable window,
   auto-follow, **Load older**, clear and copy), a **Stats** tab with live CPU,
   memory and network graphs, and an **interactive terminal** (`podman exec` +
-  `/bin/sh`) that resizes with the pane, keeps 2000 lines of scrollback (mouse
-  wheel plus a **Live** button), honours application cursor keys, and supports
+  `/bin/sh`) built on the Alacritty emulator core (true color, `OSC 4`
+  palettes, `OSC 52` clipboard copies, wide/emoji characters) that resizes with
+  the pane, keeps 2000 lines of scrollback (mouse wheel plus a **Live** button),
+  honours application cursor keys, and supports
   drag/double-click selection with copy (`Ctrl+Shift+C`) and paste
   (`Ctrl+Shift+V`, bracketed when the program asks). Containers belonging to a
   compose project show `project/service` under their name.
@@ -410,13 +412,17 @@ the **Connections** tab to make this app talk to the VM.
   only acts as a fallback.
 - Terminal: `src/terminal.rs` allocates a PTY (`openpty`), attaches
   `podman exec -it -e TERM=xterm-256color <id> /bin/sh` to the slave side and
-  reads the master on a thread; `vt100` emulates the screen (colors, cursor,
-  alternate screen) and `src/ui/terminal.rs` renders it as style-grouped
+  reads the master on a thread; the `alacritty_terminal` emulator (the same core
+  Alacritty uses) parses the stream, so 16/256/true-color, `OSC 4` palette
+  redefinitions, wide and combining characters, alternate screen and `OSC 52`
+  clipboard copies work. `src/ui/terminal.rs` renders the grid as style-grouped
   monospace runs. The grid follows the pane: the details layout is measured
   during prepaint, the chosen font's advance (from `TextSystem::advance`) turns
-  the pixel width into columns, and `Parser::set_size` plus `TIOCSWINSZ` resize
-  the emulator and the pty. The emulator's callbacks feed `OSC 0/2` titles into
-  the pane header. Keystrokes are translated to PTY bytes (printable
+  the pixel width into columns, and `Term::resize` plus `TIOCSWINSZ` resize
+  the emulator and the pty. The emulator's event proxy feeds `OSC 0/2` titles
+  and `OSC 52` copies into the pane header and system clipboard, and its
+  `PtyWrite` replies (device attributes, cursor-position reports) go back to the
+  pty. Keystrokes are translated to PTY bytes (printable
   characters, arrows, Home/End, Delete, Tab, Enter, Backspace, Ctrl+letter,
   Alt); `Ctrl+Shift+C`/`V` copy and paste (wrapped in `ESC[200~`/`ESC[201~`
   when the program enabled bracketed paste), and mouse events are reported to
@@ -509,8 +515,12 @@ prioritized next milestones and verification checklist.
   for a word and triple-click for a line, `Ctrl+Shift+C` to copy and
   `Ctrl+Shift+V` to paste (bracketed when the program enables it), the cursor
   shapes programs request with `DECSCUSR`, dim/italic/underline/bold/inverse
-  text, `OSC 0/2` window titles and mouse reporting; hyperlinks (`OSC 8`) are
-  not supported because the `vt100` crate does not expose them, and the shell
+  text, `OSC 0/2` window titles, `OSC 52` copies and mouse reporting. `OSC 8`
+  hyperlinks are parsed but drawn as plain text (no clickable links), and
+  per-cell underline colours (`OSC 58`) use the text colour. The kitty keyboard
+  protocol is not negotiated, so programs fall back to the xterm sequences
+  above. `OSC 52` loads are answered empty because the emulator runs off the UI
+  thread and cannot read the system clipboard; copies work. The shell
   is always `/bin/sh`. While it has focus, keys (including app shortcuts such as
   `Ctrl+Q`) go to the shell; click elsewhere to use shortcuts. `podman exec`
   requires a running container. If the app is hard-killed while a terminal is
