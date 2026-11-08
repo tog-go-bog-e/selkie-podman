@@ -671,13 +671,21 @@ mod tests {
     }
 
     #[test]
-    fn client_does_not_inherit_the_master() {
-        let session = run_to_close("ls -l /proc/$$/fd");
+    fn client_is_attached_to_the_pty_slave() {
+        // Check the three descriptors the child actually uses. A whole-fd-table
+        // listing is unreliable here: the test process itself may hold unrelated
+        // non-CLOEXEC descriptors (GL, LMDB, ...) that every child inherits.
+        let session = run_to_close("readlink /proc/$$/fd/0 /proc/$$/fd/1 /proc/$$/fd/2");
         let text = session.contents();
-        assert!(text.contains("/dev/pts/"), "listing missing: {text}");
+        let links: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(links.len(), 3, "unexpected fd listing: {text}");
         assert!(
-            !text.contains("ptmx"),
-            "master leaked into the client: {text}"
+            links.iter().all(|link| link.starts_with("/dev/pts/")),
+            "client is not attached to the pty slave: {text}"
         );
     }
 
