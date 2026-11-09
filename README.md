@@ -13,6 +13,7 @@ Podman, Podman Desktop or Docker projects.
 [![UI: gpui](https://img.shields.io/badge/ui-gpui-8a2be2.svg)](https://gpui.rs)
 [![Engines: Podman and Docker](https://img.shields.io/badge/engines-Podman%20%26%20Docker-2e7dbe.svg)](https://podman.io)
 [![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](#requirements)
+[![Vibe coded](https://img.shields.io/badge/vibe%20coded-mostly%20AI-ff69b4.svg)](#vibe-coded)
 
 ## Features
 
@@ -159,6 +160,17 @@ Codeberg runs the same checks on every push and pull request through
 the published package records `libc6 (>= 2.39)` — fine on Ubuntu 24.04 and
 newer, while Debian 12 users should build it locally. The upload step needs a
 `codeberg_token` Woodpecker secret with the `write:repository` scope.
+
+## Vibe coded
+
+This project is vibe coded: most of the code was written by pair-programming
+with a coding agent, with a human choosing the scope, reviewing the diff and
+testing each feature by hand against a real Podman engine. The verification
+steps for every feature are recorded in [ROADMAP.md](ROADMAP.md).
+
+CI repeats `cargo fmt --check`, `cargo clippy` and `cargo test` on every commit,
+but treat this as what it is — a working but young application. Audit the parts
+you depend on, and report what breaks.
 
 ## Known limitations
 
