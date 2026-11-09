@@ -8,6 +8,12 @@ deliberately small, lightweight alternative to
 Selkie is an independent project. It is not affiliated with or endorsed by the
 Podman, Podman Desktop or Docker projects.
 
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![UI: gpui](https://img.shields.io/badge/ui-gpui-8a2be2.svg)](https://gpui.rs)
+[![Engines: Podman and Docker](https://img.shields.io/badge/engines-Podman%20%26%20Docker-2e7dbe.svg)](https://podman.io)
+[![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](#requirements)
+
 ## Features
 
 - **Engines** — Podman through its CLI (default), Podman (API) and Docker through
