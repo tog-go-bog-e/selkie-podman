@@ -668,6 +668,34 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       refreshed list, both gone from `podman volume ls`; also checked a
       container row and cancelled without deleting it
 
+### Done (CI pipeline)
+
+- [x] `.woodpecker.yaml` runs `cargo fmt --check`, `cargo clippy --all-targets
+      -- -D warnings` and `cargo test` on every push and pull request in
+      `rust:1.99-trixie`, installing GPUI's pkg-config build dependencies and
+      the X11/XKB linker through `apt`
+- [x] Tag builds (`v*`) first check that the tag matches `version` in
+      `Cargo.toml`, then run `packaging/build-deb.sh` in the same image with
+      `DEB_MAINTAINER` set, write `dist/SHA256SUMS`, and attach the `.deb` and
+      the checksum file to the Codeberg release with
+      `woodpeckerci/plugin-release` (`codeberg_token` Woodpecker secret with the
+      `write:repository` scope)
+- [x] Because the package is built on trixie, its `Depends` records `libc6 (>=
+      2.39)` (Ubuntu 24.04 and newer); README points Debian 12 users at a local
+      `packaging/build-deb.sh` run
+- [x] Verified locally: the pipeline parses as YAML and conforms to Woodpecker's
+      workflow schema (`commands_step`/`plugin_step` keys, `when.ref`), the
+      tag/version guard accepts `v0.1.0` and rejects `v0.2.0` and an empty tag,
+      and both images the pipeline uses exist on Docker Hub
+- [x] Verified end to end in `rust:1.99-trixie` with the source tree mounted and
+      only the step's `apt` dependencies installed: they install, every
+      pkg-config module (`freetype2`, `fontconfig`, `wayland-client`,
+      `xkbcommon`, `xkbcommon-x11`, `vulkan`) resolves, and
+      `packaging/build-deb.sh` produced `dist/selkie_0.1.0-1_amd64.deb` (6.4 MB,
+      stripped binary, `Depends: libc6 (>= 2.39), … , podman`, `Maintainer` taken
+      from `DEB_MAINTAINER`) that `apt-get -s install` accepts; with a warm cargo
+      cache the build took 4m 14s, a cold CI clone will take longer
+
 ### Current architecture
 
 | Concern | Implementation |
@@ -1496,6 +1524,14 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
     `podman system connection list` shows no `Identity` for that connection;
     save a plain (unencrypted) key instead and it does appear in Podman's
     record.
+67. CI pipeline: push the workflow (or open a pull request) and watch the
+    `test` step on <https://ci.codeberg.org>: fmt, clippy with `-D warnings` and
+    the unit tests all pass in the container. Push a throwaway tag
+    (`git tag v0.1.0 && git push origin v0.1.0`) with the `codeberg_token`
+    secret in place: `package` builds `dist/selkie_0.1.0-1_amd64.deb` and
+    `dist/SHA256SUMS`, and `release` attaches both to the `v0.1.0` Codeberg
+    release. Pushing `v0.2.0` instead must fail `package` with “does not match
+    Cargo.toml version”.
 
 ## File map
 
@@ -1524,6 +1560,8 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
 - `src/ui/settings.rs` — persisted settings
 - `src/main.rs` — window bootstrap, close handler, desktop/window-state task
 - `build.rs` — Linux linker shim
+- `.woodpecker.yaml` — CI pipeline (tests on every push, Debian package and
+  release assets on tags)
 - `packaging/` — icon SVG + PNGs, desktop entry, man page, `install.sh`,
   `build-release.sh`, `build-deb.sh`, `render-icons.sh`
 - `README.md` — user-facing usage and limitations

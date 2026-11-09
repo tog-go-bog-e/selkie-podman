@@ -1,0 +1,71 @@
+# Codeberg CI (Woodpecker) pipeline.
+#
+#   push / pull request  -> formatting, clippy and the unit tests
+#   tag vX.Y.Z           -> the same checks, then a Debian package that is
+#                           attached to the Codeberg release for that tag
+#
+# Codeberg's hosted Woodpecker instance is opt-in: request access, then enable
+# this repository at https://ci.codeberg.org/repos/add. The release step needs a
+# `codeberg_token` secret, added in that repository's Woodpecker settings (or
+# `woodpecker-cli secret add`), holding a Codeberg token with the
+# `write:repository` scope.
+
+variables:
+  # Everything runs on the current Debian stable (trixie).
+  - &rust "rust:1.99-trixie"
+  # The libraries GPUI's build scripts find through pkg-config plus the linker
+  # for the X11/XKB backend; see README → Requirements.
+  - &deps "clang pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libfontconfig1-dev libfreetype-dev libasound2-dev"
+
+steps:
+  test:
+    image: *rust
+    environment:
+      CARGO_TERM_COLOR: always
+      DEPS: *deps
+    commands:
+      - rustup component add rustfmt clippy
+      - apt-get update -qq
+      - apt-get install -y -qq --no-install-recommends $DEPS
+      - cargo fmt --all -- --check
+      - cargo clippy --all-targets -- -D warnings
+      - cargo test
+
+  package:
+    image: *rust
+    depends_on: [test]
+    when:
+      - event: tag
+        ref: refs/tags/v*
+    environment:
+      CARGO_TERM_COLOR: always
+      DEPS: *deps
+      DEB_MAINTAINER: "Nils Olofsson <nils@olofsson.tv>"
+    commands:
+      - apt-get update -qq
+      - apt-get install -y -qq --no-install-recommends $DEPS dpkg-dev binutils
+      # The Debian version comes from Cargo.toml; refuse to ship a package whose
+      # version does not match the tag that triggered the build.
+      - |
+        version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+        if [ "v$version" != "$CI_COMMIT_TAG" ]; then
+          echo "error: tag $CI_COMMIT_TAG does not match Cargo.toml version $version" >&2
+          exit 1
+        fi
+      - ./packaging/build-deb.sh
+      - (cd dist && sha256sum *.deb > SHA256SUMS && cat SHA256SUMS)
+
+  release:
+    image: woodpeckerci/plugin-release
+    depends_on: [package]
+    when:
+      - event: tag
+        ref: refs/tags/v*
+    settings:
+      api-key:
+        from_secret: codeberg_token
+      # Paths are relative to the repository root, not the step's directory.
+      files:
+        - dist/*.deb
+        - dist/SHA256SUMS
+      file-exists: overwrite

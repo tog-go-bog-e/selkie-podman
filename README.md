@@ -491,6 +491,29 @@ cargo test          # parsers, formatting, filtering, validation
 cargo clippy
 ```
 
+## Continuous integration
+
+The Codeberg repository is wired to Codeberg's Woodpecker instance through
+[`.woodpecker.yaml`](.woodpecker.yaml):
+
+| Trigger | Steps |
+| ------- | ----- |
+| push, pull request | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` |
+| tag `vX.Y.Z` | the same checks, then `packaging/build-deb.sh` and a Codeberg release carrying the `.deb` and `SHA256SUMS` |
+
+The tag must match `version` in `Cargo.toml` (`v0.1.0` for `0.1.0`); the package
+step fails otherwise so a release can never ship the wrong version number.
+Everything runs in `rust:1.99-trixie`, so the released `.deb` records Debian 13's
+symbol versions (`libc6 (>= 2.39)`): it installs on Ubuntu 24.04 and newer,
+while Debian 12 users need to build locally with `packaging/build-deb.sh`.
+
+Codeberg CI is opt-in: request access for <https://ci.codeberg.org>, enable the
+repository under *Repositories → Add*, and create a `codeberg_token` secret in
+that repository's Woodpecker settings (*Settings → Secrets*), holding a Codeberg
+token with the `write:repository` scope; the release step uses it to upload the
+assets. Secrets can also be added with `woodpecker-cli secret add`. Both CI steps
+compile GPUI from scratch, so a pipeline takes a while.
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for the delivered scope, architecture notes,
