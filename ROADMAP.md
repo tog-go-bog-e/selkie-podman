@@ -1562,6 +1562,7 @@ rendering the previous selection. `Ctrl+Q` still ended the process.
 - `build.rs` — Linux linker shim
 - `.woodpecker.yaml` — CI pipeline (tests on every push, Debian package and
   release assets on tags)
+- `docs/` — screenshots used by the README (also shipped in the package docs)
 - `packaging/` — icon SVG + PNGs, desktop entry, man page, `install.sh`,
   `build-release.sh`, `build-deb.sh`, `render-icons.sh`
 - `README.md` — user-facing usage and limitations

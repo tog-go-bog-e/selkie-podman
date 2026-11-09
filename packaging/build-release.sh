@@ -33,6 +33,7 @@ mkdir -p "$STAGE"
 
 install -m755 target/release/selkie "$STAGE/"
 install -m644 README.md ROADMAP.md "$STAGE/"
+cp -R docs "$STAGE/docs"
 install -m755 packaging/install.sh "$STAGE/install.sh"
 install -m644 packaging/selkie.desktop "$STAGE/"
 cp -R packaging/icons "$STAGE/icons"

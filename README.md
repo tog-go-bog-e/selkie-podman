@@ -15,6 +15,8 @@ Podman, Podman Desktop or Docker projects.
 [![Platform: Linux](https://img.shields.io/badge/platform-Linux-lightgrey.svg)](#requirements)
 [![Vibe coded](https://img.shields.io/badge/vibe%20coded-mostly%20AI-ff69b4.svg)](#vibe-coded)
 
+![Selkie's dashboard: resource counts, disk usage and engine details](docs/dashboard.png)
+
 ## Features
 
 - **Engines** — Podman through its CLI (default), Podman (API) and Docker through
@@ -145,6 +147,8 @@ active tab and Settings pane, auto-refresh interval (3 / 5 / 10 / 30 s), log
 window (5 m – 1 h), sidebar and details widths, window size and maximized state,
 and the selected connection. Invalid fields fall back to their defaults per
 field; delete the file to reset everything.
+
+![Settings → Registries, with the registry accounts read from Podman's auth files](docs/registries.png)
 
 ## Tests and CI
 

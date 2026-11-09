@@ -99,6 +99,8 @@ for size in 16 32 48 64 128 256 512; do
         "$STAGE/usr/share/icons/hicolor/${size}x${size}/apps/selkie.png"
 done
 install -m644 README.md ROADMAP.md "$DOC/"
+mkdir -p "$DOC/docs"
+install -m644 docs/*.png "$DOC/docs/"
 
 # DEP-5 copyright. Apache-2.0 is a common license on Debian, so point at the
 # system copy instead of shipping the full text.
