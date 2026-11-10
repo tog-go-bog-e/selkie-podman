@@ -365,7 +365,9 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
       validated, and output streams into the shared panel
 - [x] **Login**/**Logout** buttons in the Images toolbar; the login form takes
       registry, username and a masked password, and pipes the password to
-      `podman login --password-stdin` (never an argument)
+      `podman login --password-stdin` (never an argument). Logins are written to
+      the XDG config auth file (`--authfile`), not Podman's tmpfs runtime file, so
+      they survive a restart; logout clears the same file
 - [x] Logout accepts a registry or logs out of everything when the field is empty
 - [x] Loopback registries (`localhost`, `127.0.0.1`, `[::1]`) automatically use
       `--tls-verify=false` for push/login/logout, so a local dev registry works
@@ -721,7 +723,7 @@ surface than Podman Desktop, no extension platform, no Kubernetes. Optimize for:
 | Logs | `podman logs -f --since <window> --timestamps` for containers and `podman compose logs -f --tail 200 [service]` for projects, both through one reader-thread → mpsc → UI task pipeline |
 | Compose | Projects grouped from `ps` labels; `podman compose up -d` / `restart` / `build` / `down` stream through the shared panel, the Logs tab streams from the provider |
 | Long-running commands | `src/ui/output.rs` + `start_output`: compose up/down, image builds and pulls stream stdout/stderr into one panel, one at a time |
-| Registries | `podman push` with a validated destination; `podman login --password-stdin` / `podman logout` with credentials kept out of argv; loopback registries skip TLS verification |
+| Registries | `podman push` with a validated destination; `podman login --password-stdin --authfile <config auth.json>` / `podman logout --authfile <config auth.json>` with credentials kept out of argv and stored durably in the XDG config auth file; loopback registries skip TLS verification |
 | Accounts | Registry logins parsed from Podman's auth files (`REGISTRY_AUTH_FILE`, runtime/config `auth.json`, Docker config); username and a masked password (or `token`), a `⋮` menu with Log out, Add registry, and Configure buttons for Docker Hub/Quay/GitHub/GCR |
 | Connections | `podman system connection list` read locally; **Add**/**Edit** run `podman system connection add [--identity FILE] NAME URI` (ssh:// or absolute unix://, `~/` expanded, no `--default`; edits rename first and then replace URI/identity in place) and **Delete** runs `system connection remove`; reachability probes run `podman --connection NAME info` in background tasks (15 s cap) and feed the STATUS column, details pane and explicit-check toasts; every engine command gets `--connection NAME` |
 | SSH keys | `src/podman/ssh.rs`: key paths cached in settings, a private `ssh-agent` per connection, `ssh-add` unlock with an askpass re-execution of the binary, `SSH_AUTH_SOCK` chosen per connection (app agent, identity-only, or session fallback), watchdog and startup cleanup |

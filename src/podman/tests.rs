@@ -391,17 +391,29 @@ fn builds_push_and_registry_commands() {
         ]
     );
 
-    let command = login_command("quay.io", "user").expect("login command");
+    // Logins are written to the persistent config auth file, not Podman's
+    // ephemeral runtime file, so they survive a reboot.
+    let auth_file = std::path::Path::new("/home/user/.config/containers/auth.json");
+    let command = login_command_with(Some(auth_file), "quay.io", "user").expect("login command");
     let args: Vec<String> = command
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
     assert_eq!(
         args,
-        ["login", "--username", "user", "--password-stdin", "quay.io"]
+        [
+            "login",
+            "--username",
+            "user",
+            "--password-stdin",
+            "--authfile",
+            "/home/user/.config/containers/auth.json",
+            "quay.io"
+        ]
     );
 
-    let command = login_command("127.0.0.1:5001", "user").expect("local login");
+    let command =
+        login_command_with(Some(auth_file), "127.0.0.1:5001", "user").expect("local login");
     let args: Vec<String> = command
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -414,23 +426,41 @@ fn builds_push_and_registry_commands() {
             "user",
             "--password-stdin",
             "--tls-verify=false",
+            "--authfile",
+            "/home/user/.config/containers/auth.json",
             "127.0.0.1:5001"
         ]
     );
 
-    let command = logout_command(Some("quay.io")).expect("logout command");
+    let command = logout_command_with(Some(auth_file), Some("quay.io")).expect("logout command");
     let args: Vec<String> = command
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    assert_eq!(args, ["logout", "quay.io"]);
+    assert_eq!(
+        args,
+        [
+            "logout",
+            "--authfile",
+            "/home/user/.config/containers/auth.json",
+            "quay.io"
+        ]
+    );
 
-    let command = logout_command(None).expect("logout all");
+    let command = logout_command_with(Some(auth_file), None).expect("logout all");
     let args: Vec<String> = command
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    assert_eq!(args, ["logout", "--all"]);
+    assert_eq!(
+        args,
+        [
+            "logout",
+            "--authfile",
+            "/home/user/.config/containers/auth.json",
+            "--all"
+        ]
+    );
 
     assert!(push_command("alpine", "").is_err());
     assert!(push_command("alpine", "-bad").is_err());

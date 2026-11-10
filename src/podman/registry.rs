@@ -64,12 +64,27 @@ pub(super) fn push_display_for(kind: EngineKind, image: &str, destination: &str)
 
 /// Log in to a registry. The password is fed on stdin, never as an argument.
 pub fn login_command(registry: &str, username: &str) -> Result<Command, String> {
+    login_command_with(persistent_auth_file().as_deref(), registry, username)
+}
+
+/// [`login_command`] with an explicit auth file, so it can be tested without
+/// depending on the process environment.
+pub(super) fn login_command_with(
+    auth_file: Option<&std::path::Path>,
+    registry: &str,
+    username: &str,
+) -> Result<Command, String> {
     let registry = validate_registry(registry)?;
     let username = validate_username(username)?;
     let mut command = base_command();
     command.args(["login", "--username", username, "--password-stdin"]);
     if engine() == EngineKind::Podman && is_loopback_registry(registry) {
         command.arg("--tls-verify=false");
+    }
+    if engine() != EngineKind::Docker {
+        if let Some(auth_file) = auth_file {
+            command.arg("--authfile").arg(auth_file);
+        }
     }
     command.arg(registry);
     Ok(command)
@@ -80,6 +95,29 @@ pub fn login_command(registry: &str, username: &str) -> Result<Command, String> 
 /// For Docker, "all" has no flag (`docker logout` takes one server), so it is
 /// handled by [`logout`]; this returns an error for that case.
 pub fn logout_command(registry: Option<&str>) -> Result<Command, String> {
+    logout_command_with(logout_auth_file(registry).as_deref(), registry)
+}
+
+/// The auth file a logout should clear.
+///
+/// Prefer the file that actually holds the credential, so an entry created by an
+/// older Selkie (or another tool) in the runtime file is still removed. Otherwise
+/// fall back to the persistent file logins are written to.
+fn logout_auth_file(registry: Option<&str>) -> Option<std::path::PathBuf> {
+    if engine::is_docker() {
+        return None;
+    }
+    match registry.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(registry) => auth_file_containing(registry).or_else(persistent_auth_file),
+        None => persistent_auth_file(),
+    }
+}
+
+/// [`logout_command`] with an explicit auth file, for testing.
+pub(super) fn logout_command_with(
+    auth_file: Option<&std::path::Path>,
+    registry: Option<&str>,
+) -> Result<Command, String> {
     let mut command = base_command();
     command.arg("logout");
     match registry.map(str::trim).filter(|value| !value.is_empty()) {
@@ -88,12 +126,22 @@ pub fn logout_command(registry: Option<&str>) -> Result<Command, String> {
             if engine() == EngineKind::Podman && is_loopback_registry(registry) {
                 command.arg("--tls-verify=false");
             }
+            if engine() != EngineKind::Docker {
+                if let Some(auth_file) = auth_file {
+                    command.arg("--authfile").arg(auth_file);
+                }
+            }
             command.arg(registry);
         }
         None if engine() == EngineKind::Docker => {
             return Err("docker logout takes a single registry".to_string());
         }
         None => {
+            if engine() != EngineKind::Docker {
+                if let Some(auth_file) = auth_file {
+                    command.arg("--authfile").arg(auth_file);
+                }
+            }
             command.arg("--all");
         }
     }
@@ -159,40 +207,83 @@ impl AccountKind {
 /// honoured so an entry created with another tool (or `REGISTRY_AUTH_FILE`) is
 /// still listed.
 pub fn auth_files() -> Vec<std::path::PathBuf> {
-    use std::path::PathBuf;
-
-    let mut files = Vec::new();
     if engine::is_docker() {
-        // Docker keeps credentials in its own config, not Podman's auth files.
-        // `DOCKER_CONFIG` replaces `~/.docker` entirely; Docker does not
-        // fall back to the home directory when it is set.
-        match std::env::var_os("DOCKER_CONFIG").filter(|value| !value.is_empty()) {
-            Some(config) => files.push(PathBuf::from(config).join("config.json")),
-            None => {
-                if let Some(home) = std::env::var_os("HOME") {
-                    files.push(PathBuf::from(home).join(".docker/config.json"));
-                }
-            }
-        }
-        return files;
+        return docker_config_files();
     }
-    if let Some(path) = std::env::var_os("REGISTRY_AUTH_FILE") {
-        files.push(PathBuf::from(path));
-    }
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        files.push(PathBuf::from(runtime).join("containers/auth.json"));
-    }
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
-    if let Some(config) = config {
-        files.push(config.join("containers/auth.json"));
-    }
+    let mut files = podman_auth_files();
     if let Some(home) = std::env::var_os("HOME") {
-        files.push(PathBuf::from(home).join(".docker/config.json"));
+        files.push(std::path::PathBuf::from(home).join(".docker/config.json"));
     }
     files
+}
+
+/// The auth files Podman itself reads and writes, in precedence order.
+fn podman_auth_files() -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    if let Some(path) = std::env::var_os("REGISTRY_AUTH_FILE").filter(|value| !value.is_empty()) {
+        files.push(std::path::PathBuf::from(path));
+    }
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+        files.push(std::path::PathBuf::from(runtime).join("containers/auth.json"));
+    }
+    if let Some(config) = config_dir() {
+        files.push(config.join("containers/auth.json"));
+    }
+    files
+}
+
+/// Docker's own credential file. `DOCKER_CONFIG` replaces `~/.docker` entirely;
+/// Docker does not fall back to the home directory when it is set.
+fn docker_config_files() -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    match std::env::var_os("DOCKER_CONFIG").filter(|value| !value.is_empty()) {
+        Some(config) => files.push(std::path::PathBuf::from(config).join("config.json")),
+        None => {
+            if let Some(home) = std::env::var_os("HOME") {
+                files.push(std::path::PathBuf::from(home).join(".docker/config.json"));
+            }
+        }
+    }
+    files
+}
+
+/// `$XDG_CONFIG_HOME`, or `~/.config` when it is unset.
+fn config_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+        })
+}
+
+/// The auth file Selkie writes logins to so they survive a restart.
+///
+/// Podman's primary auth file for rootless users is
+/// `$XDG_RUNTIME_DIR/containers/auth.json`, which lives on a tmpfs and is gone
+/// after logout or reboot. Logins are written to the XDG config file instead:
+/// Podman reads it after its primary file, so pulls and pushes keep working, and
+/// it survives restarts. An explicit `REGISTRY_AUTH_FILE` already chooses the
+/// file, so no override is returned then.
+pub(super) fn persistent_auth_file() -> Option<std::path::PathBuf> {
+    if std::env::var_os("REGISTRY_AUTH_FILE")
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return None;
+    }
+    Some(config_dir()?.join("containers/auth.json"))
+}
+
+/// The first Podman auth file that holds a credential for `registry`.
+fn auth_file_containing(registry: &str) -> Option<std::path::PathBuf> {
+    podman_auth_files().into_iter().find(|path| {
+        std::fs::read_to_string(path).is_ok_and(|contents| {
+            parse_accounts(&contents)
+                .iter()
+                .any(|account| account.registry == registry)
+        })
+    })
 }
 
 /// Registries this user is logged in to, merged across [`auth_files`].

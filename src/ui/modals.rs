@@ -466,13 +466,19 @@ impl Selkie {
                 ..
             } => match podman::login_command(&registry, &username) {
                 Ok(command) => {
+                    let command_line = format!(
+                        "$ {} {}",
+                        podman::engine().binary(),
+                        command
+                            .get_args()
+                            .map(|arg| arg.to_string_lossy().into_owned())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
                     self.start_output(
                         OutputSpec {
                             title: format!("login · {registry}"),
-                            command_line: format!(
-                                "$ {} login --username {username} --password-stdin {registry}",
-                                podman::engine().binary()
-                            ),
+                            command_line,
                             success: format!("Logged in to {registry}"),
                             failure: format!("Login failed for {registry}"),
                         },

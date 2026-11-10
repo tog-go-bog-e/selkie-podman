@@ -35,7 +35,9 @@ Podman, Podman Desktop or Docker projects.
   context, `--build-arg` table, multi-platform manifest lists), plus a
   **History** tab and a **Files** browser for the image filesystem.
 - **Registries** — login and logout with the password sent over stdin, and an
-  **Accounts** page built from Podman's auth files.
+  **Accounts** page built from Podman's auth files. Logins are written to
+  `$XDG_CONFIG_HOME/containers/auth.json` (usually `~/.config/containers/auth.json`)
+  rather than Podman's runtime file, so they survive a restart.
 - **Pods, volumes, networks, secrets** — list, create, inspect and delete; prune
   unused volumes and networks; `kube play` a Kubernetes YAML; secrets can be
   mounted into a container from the run dialog.
@@ -214,7 +216,8 @@ you depend on, and report what breaks.
 - **Registries** — there is no registry management page, no multi-arch manifest
   push and no insecure-registry configuration beyond the automatic loopback
   `--tls-verify=false`. Passwords are masked and sent over stdin but stay in
-  memory until the command finishes.
+  memory until the command finishes. Logins go to the XDG config auth file (see
+  **Registries** above); an existing `REGISTRY_AUTH_FILE` is left untouched.
 - **Run** always detaches (`podman run -d`): no attach mode, restart policies,
   resource limits, custom networks, user or privileged options yet.
 - **Builds** validate only the registries named in `FROM` lines (no probing) and
