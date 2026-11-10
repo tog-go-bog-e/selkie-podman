@@ -526,6 +526,8 @@ impl Selkie {
             .child(
                 div()
                     .w(px(104.))
+                    .flex()
+                    .items_center()
                     .child(state_pill(&container.state, color, color_bg)),
             )
             .child(muted_cell(ports_summary(&container.ports), 140.));
@@ -629,6 +631,8 @@ impl Selkie {
             .child(
                 div()
                     .w(px(110.))
+                    .flex()
+                    .items_center()
                     .child(state_pill(&pod.status, color, color_bg)),
             )
             .child(cell(pod.containers.to_string(), 110.));
